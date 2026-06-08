@@ -1,0 +1,133 @@
+{
+  "entities": {
+    "Sale": {
+      "title": "Sale",
+      "description": "A sale record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "customerName": { "type": "string" },
+        "managerName": { "type": "string" },
+        "amount": { "type": "number" },
+        "feeRate": { "type": "number" },
+        "profit": { "type": "number" },
+        "fee": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "completed"] },
+        "notes": { "type": "string" },
+        "imwebData": { "type": "object" }
+      },
+      "required": ["id", "date", "customerName", "managerName", "amount", "feeRate", "profit", "fee", "status"]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "System settings parameters",
+      "type": "object",
+      "properties": {
+        "defaultFeeRate": { "type": "number" },
+        "targetMonthlySales": { "type": "number" },
+        "targetMonthlyProfit": { "type": "number" },
+        "companyName": { "type": "string" }
+      },
+      "required": ["defaultFeeRate", "targetMonthlySales", "targetMonthlyProfit", "companyName"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "Employee record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["코치", "영업팀", "관리자", "임원"] },
+        "department": { "type": "string" },
+        "joinedDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "baseSalary": { "type": "number" },
+        "salesTarget": { "type": "number" }
+      },
+      "required": ["id", "name", "email", "phone", "role", "department", "joinedDate", "status"]
+    },
+    "Coach": {
+      "title": "Coach",
+      "description": "Coach record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "specialty": { "type": "string" },
+        "tier": { "type": "string", "enum": ["A", "B", "C"] },
+        "joinedDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] }
+      },
+      "required": ["id", "name", "email", "phone", "specialty", "tier", "joinedDate", "status"]
+    },
+    "CoachFeeItem": {
+      "title": "CoachFeeItem",
+      "description": "Coach fee record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "coachId": { "type": "string" },
+        "coachName": { "type": "string" },
+        "customerName": { "type": "string" },
+        "salesAmount": { "type": "number" },
+        "feeRate": { "type": "number" },
+        "calculatedFee": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "completed"] },
+        "payoutDate": { "type": "string" },
+        "salesId": { "type": "string" }
+      },
+      "required": ["id", "date", "coachId", "coachName", "customerName", "salesAmount", "feeRate", "calculatedFee", "status"]
+    },
+    "SalesFeeItem": {
+      "title": "SalesFeeItem",
+      "description": "Sales fee record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "managerId": { "type": "string" },
+        "managerName": { "type": "string" },
+        "customerName": { "type": "string" },
+        "salesAmount": { "type": "number" },
+        "commissionRate": { "type": "number" },
+        "calculatedFee": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "completed"] },
+        "payoutDate": { "type": "string" },
+        "salesId": { "type": "string" }
+      },
+      "required": ["id", "date", "managerId", "managerName", "customerName", "salesAmount", "commissionRate", "calculatedFee", "status"]
+    }
+  },
+  "firestore": {
+    "/sales/{saleId}": {
+      "schema": "Sale",
+      "description": "Store all sales"
+    },
+    "/settings/{docId}": {
+      "schema": "SystemSettings",
+      "description": "System settings"
+    },
+    "/employees/{employeeId}": {
+      "schema": "Employee",
+      "description": "Store employees"
+    },
+    "/coaches/{coachId}": {
+      "schema": "Coach",
+      "description": "Store coaches"
+    },
+    "/coach_fees/{feeId}": {
+      "schema": "CoachFeeItem",
+      "description": "Store coach fees"
+    },
+    "/sales_fees/{feeId}": {
+      "schema": "SalesFeeItem",
+      "description": "Store sales fees"
+    }
+  }
+}

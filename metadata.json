@@ -1,0 +1,6 @@
+{
+  "name": "Coaching Pass CRM",
+  "description": "코칭패스의 실시간 영업 지표 관리 및 수수료 정산을 위한 고성능 엔터프라이즈 대시보드",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
