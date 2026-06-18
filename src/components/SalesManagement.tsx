@@ -26,6 +26,27 @@ const roundDown = (value: number, digits: number): number => {
   return Math.floor(value * factor) / factor;
 };
 
+/**
+ * 아임웹 프록시 호출 헬퍼.
+ * 아임웹 v2 API는 호출이 잦으면 HTTP 200 + {"code":-7,"msg":"TOO MANY REQUEST"}로
+ * 응답한다. 이 경우 지수 백오프로 재시도한다. (성공 신호는 호출부에서 판별)
+ */
+async function fetchImweb(url: string, maxRetries = 4): Promise<{ res: Response; data: any }> {
+  let lastRes!: Response;
+  let lastData: any = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    lastRes = await fetch(url);
+    lastData = await lastRes.json().catch(() => null);
+    // 속도 제한이면 점점 길게 대기 후 재시도 (1.5s, 3s, 4.5s, 6s)
+    if (lastData && lastData.code === -7 && attempt < maxRetries) {
+      await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)));
+      continue;
+    }
+    break;
+  }
+  return { res: lastRes, data: lastData };
+}
+
 interface SalesManagementProps {
   sales: Sale[];
   setSales: React.Dispatch<React.SetStateAction<Sale[]>>;
@@ -144,11 +165,12 @@ export default function SalesManagement(props: SalesManagementProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 1분 주기로 실시간 동기화 (폴링)
+  // 5분 주기로 자동 동기화 (폴링). 아임웹 v2 API의 속도 제한(TOO MANY REQUEST)을
+  // 피하기 위해 주기를 넉넉히 둔다. 즉시 갱신이 필요하면 상단 동기화 버튼 사용.
   React.useEffect(() => {
     const interval = setInterval(() => {
       handleSyncImwebOrders(true); // true = 조용한 동기화(UI 알림 축소)
-    }, 60000);
+    }, 300000);
     return () => clearInterval(interval);
   }, []);
 
@@ -213,13 +235,25 @@ export default function SalesManagement(props: SalesManagementProps) {
       const TARGET_TIMESTAMP = new Date('2026-05-01T00:00:00+09:00').getTime() / 1000;
       
       while (keepFetching && offset < 50) { // Limit absolute max loops
-        const res = await fetch(`/api/imweb/orders?limit=100&offset=${offset}`);
-        const data = await res.json();
-        
-        if (res.ok && data.data && data.data.list && data.data.list.length > 0) {
-          const list = data.data.list;
+        const { res, data } = await fetchImweb(`/api/imweb/orders?limit=100&offset=${offset}`);
+
+        // 주의: 아임웹 v2 API는 인증 실패 등 오류 상황에서도 HTTP 200을 반환하고
+        // 본문에 {"msg":"...Error","code":-5} 형태로 결과를 담는다. 검증된 성공 신호는
+        // data.data.list 배열의 존재이므로, 이를 기준으로 성공/실패를 판별한다.
+        const list = Array.isArray(data?.data?.list) ? data.data.list : null;
+
+        if (!list) {
+          // list가 없으면 오류(인증/권한/속도제한 등)이거나 응답 이상 → 실제 메시지 노출
+          const reason = data?.error || data?.msg || `HTTP ${res?.status}`;
+          setSyncMessage({ type: 'error', text: `아임웹 연동 실패: ${reason}` });
+          setTimeout(() => setSyncMessage(null), 8000);
+          setIsSyncingImweb(false);
+          return;
+        }
+
+        if (list.length > 0) {
           allOrders.push(...list);
-          
+
           // Check if the oldest order in this batch is before target date
           if (list[list.length - 1].order_time < TARGET_TIMESTAMP || list.length < 100) {
             keepFetching = false;
@@ -259,27 +293,22 @@ export default function SalesManagement(props: SalesManagementProps) {
             
             // Build the query array: order_no[]=A&order_no[]=B
             const qs = chunk.map(o => `order_no[]=${o.order_no}`).join("&");
-            const prodRes = await fetch(`/api/imweb/prod-orders?${qs}`);
-            const contentType = prodRes.headers.get("content-type");
-            
-            if (prodRes.ok && contentType && contentType.includes("application/json")) {
-              const prodData = await prodRes.json();
-              if (prodData.msg === 'SUCCESS' && prodData.data) {
-                // prodData.data is an object keyed by order_no
-                for (const order of chunk) {
-                  const poKeys = Object.values(prodData.data[order.order_no] || {});
-                  order.items = poKeys.flatMap((po: any) => 
-                    (po.items || []).map((item: any) => ({
-                      orderNo: item.order_no || order.order_no,
-                      name: item.prod_name || '이름 없음',
-                      status: po.status || '배송대기'
-                    }))
-                  );
-                }
+            const { res: prodRes, data: prodData } = await fetchImweb(`/api/imweb/prod-orders?${qs}`);
+
+            if (prodData && prodData.msg === 'SUCCESS' && prodData.data) {
+              // prodData.data is an object keyed by order_no
+              for (const order of chunk) {
+                const poKeys = Object.values(prodData.data[order.order_no] || {});
+                order.items = poKeys.flatMap((po: any) =>
+                  (po.items || []).map((item: any) => ({
+                    orderNo: item.order_no || order.order_no,
+                    name: item.prod_name || '이름 없음',
+                    status: po.status || '배송대기'
+                  }))
+                );
               }
             } else {
-               const errorText = await prodRes.text();
-               console.error(`Non-JSON or failed response for batch starting ${chunk[0].order_no}:`, prodRes.status, errorText.substring(0, 100));
+               console.error(`prod-orders 응답 오류 (batch starting ${chunk[0].order_no}):`, prodRes?.status, prodData?.msg || prodData);
             }
           } catch (e) {
             console.error(`Failed to fetch prod-orders for batch starting ${chunk[0].order_no}`, e);
