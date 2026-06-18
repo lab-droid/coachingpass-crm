@@ -20,6 +20,7 @@ import {
   Users
 } from 'lucide-react';
 import { User } from '../types';
+import logoUrl from '../assets/images/coachingpass_logo.png';
 
 interface SidebarProps {
   activeTab: string;
@@ -53,11 +54,11 @@ export default function Sidebar(props: SidebarProps) {
       {/* Mobile Header Bar */}
       <header className="lg:hidden bg-slate-950 text-white font-sans h-16 px-4 flex items-center justify-between border-b border-slate-800 shrink-0 w-full sticky top-0 z-50">
         <div className="flex items-center space-x-2">
-          <div className="h-9 w-9 rounded-lg bg-black border border-amber-500/30 flex items-center justify-center overflow-hidden shadow-lg shrink-0">
-            <img 
-              src="/src/assets/images/coachingpass_logo_1780933492848.png" 
-              className="h-full w-full object-cover" 
-              alt="코칭패스 CRM" 
+          <div className="h-9 w-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center overflow-hidden shadow-lg shrink-0">
+            <img
+              src={logoUrl}
+              className="h-full w-full object-contain p-1"
+              alt="코칭패스 CRM"
               referrerPolicy="no-referrer"
             />
           </div>
@@ -89,11 +90,11 @@ export default function Sidebar(props: SidebarProps) {
         <div>
           <div className="h-20 flex items-center px-6 border-b border-slate-900 justify-between">
             <div className="flex items-center space-x-2.5">
-              <div className="h-10 w-10 rounded-xl bg-black border border-amber-500/30 flex items-center justify-center overflow-hidden shadow-lg shadow-amber-500/10 shrink-0">
-                <img 
-                  src="/src/assets/images/coachingpass_logo_1780933492848.png" 
-                  className="h-full w-full object-cover" 
-                  alt="코칭패스 CRM" 
+              <div className="h-10 w-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center overflow-hidden shadow-lg shadow-slate-300/10 shrink-0">
+                <img
+                  src={logoUrl}
+                  className="h-full w-full object-contain p-1"
+                  alt="코칭패스 CRM"
                   referrerPolicy="no-referrer"
                 />
               </div>

@@ -9,6 +9,7 @@ import { Server, ShieldCheck, AlertCircle } from 'lucide-react';
 import { User } from '../types';
 import { auth } from '../firebase';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import logoUrl from '../assets/images/coachingpass_logo.png';
 
 interface LoginProps {
   onLoginSuccess: (user: User) => void;
@@ -54,19 +55,18 @@ export default function Login(props: LoginProps) {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
       >
-        <div id="login_brand_logo" className="flex items-center justify-center space-x-2">
-          <div id="brand_icon_bg" className="h-12 w-12 rounded-xl bg-black border border-amber-500/30 flex items-center justify-center overflow-hidden shadow-lg shadow-amber-500/20 shrink-0">
-            <img 
-              src="/src/assets/images/coachingpass_logo_1780933492848.png" 
-              className="h-full w-full object-cover" 
-              alt="코칭패스 CRM" 
-              referrerPolicy="no-referrer" 
+        <div id="login_brand_logo" className="flex items-center justify-center">
+          <div id="brand_icon_bg" className="h-14 w-14 rounded-xl bg-white border border-slate-200 flex items-center justify-center overflow-hidden shadow-lg shadow-slate-300/40 shrink-0">
+            <img
+              src={logoUrl}
+              className="h-full w-full object-contain p-1.5"
+              alt="코칭패스 CRM"
+              referrerPolicy="no-referrer"
             />
           </div>
-          <span className="text-2xl font-black text-slate-900 tracking-tight">코칭패스 CRM</span>
         </div>
         <h2 className="mt-6 text-center text-3xl font-extrabold text-slate-800 tracking-tight">
-          영업 성과 관리 시스템
+          코칭패스 CRM
         </h2>
         <p className="mt-2 text-center text-sm text-slate-500">
           실시간 매출 지표 및 수수료 정산의 효율적인 디지털 워크플로우

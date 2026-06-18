@@ -186,12 +186,25 @@ export default function SalesManagement(props: SalesManagementProps) {
       
       while (keepFetching && offset < 50) { // Limit absolute max loops
         const res = await fetch(`/api/imweb/orders?limit=100&offset=${offset}`);
-        const data = await res.json();
-        
-        if (res.ok && data.data && data.data.list && data.data.list.length > 0) {
-          const list = data.data.list;
+        const data = await res.json().catch(() => null);
+
+        // 주의: 아임웹 v2 API는 인증 실패 등 오류 상황에서도 HTTP 200을 반환하고
+        // 본문에 {"msg":"...Error","code":-5} 형태로 결과를 담는다. 검증된 성공 신호는
+        // data.data.list 배열의 존재이므로, 이를 기준으로 성공/실패를 판별한다.
+        const list = Array.isArray(data?.data?.list) ? data.data.list : null;
+
+        if (!list) {
+          // list가 없으면 오류이거나(인증/권한 등) 응답 이상 → 실제 메시지를 노출
+          const reason = data?.error || data?.msg || `HTTP ${res.status}`;
+          setSyncMessage({ type: 'error', text: `아임웹 연동 실패: ${reason}` });
+          setTimeout(() => setSyncMessage(null), 8000);
+          setIsSyncingImweb(false);
+          return;
+        }
+
+        if (list.length > 0) {
           allOrders.push(...list);
-          
+
           // Check if the oldest order in this batch is before target date
           if (list[list.length - 1].order_time < TARGET_TIMESTAMP || list.length < 100) {
             keepFetching = false;

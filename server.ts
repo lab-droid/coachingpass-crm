@@ -1,6 +1,12 @@
+import dotenv from "dotenv";
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+
+// Load environment variables (IMWEB_API_KEY, IMWEB_SECRET, etc.) from .env.
+// Without this, local `npm run dev` never sees the I'mweb credentials and
+// every order sync fails authentication.
+dotenv.config();
 
 let cachedToken: string | null = null;
 let tokenExpiresAt: number = 0; // timestamp in ms
@@ -25,9 +31,12 @@ async function getImwebAccessToken(): Promise<string> {
     throw new Error(`Failed to authenticate with I'mweb: ${errorText}`);
   }
 
+  // 주의: 아임웹 v2 인증은 키가 틀려도 HTTP 200을 반환하고 본문에
+  // {"msg":"API Key Error","code":-1} 형태로 결과를 담는다. 따라서 본문을 확인한다.
   const tokenData = await tokenRes.json() as any;
   if (!tokenData.access_token) {
-    throw new Error("No access token in response.");
+    const reason = tokenData?.msg || "No access token in response.";
+    throw new Error(`I'mweb auth failed: ${reason}`);
   }
 
   cachedToken = tokenData.access_token;
