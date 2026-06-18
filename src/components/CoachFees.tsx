@@ -19,10 +19,11 @@ import {
   Coins, 
   Briefcase,
   AlertCircle,
-  X
+  X,
+  FileText
 } from 'lucide-react';
 import { Coach, CoachFeeItem, Sale } from '../types';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { db, handleFirestoreError, OperationType, isQuotaExceeded } from '../firebase';
 import { collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
 import { COACH_TARIFF_TABLE, CoachTariff } from '../data/coachTariff';
 
@@ -57,11 +58,13 @@ const DEFAULT_COACH_FEES: CoachFeeItem[] = [
 
 interface CoachFeesProps {
   sales: Sale[];
+  setSales?: (newSalesAction: Sale[] | ((prev: Sale[]) => Sale[])) => void;
 }
+
+let coachesSeedAttempted = false;
 
 export default function CoachFees(props: CoachFeesProps) {
   const [coaches, setCoaches] = useState<Coach[]>([]);
-  const [coachFees, setCoachFees] = useState<CoachFeeItem[]>([]);
   const [selectedCoachId, setSelectedCoachId] = useState<string | null>(null);
   
   // Custom subtabs and rate filter states
@@ -74,6 +77,14 @@ export default function CoachFees(props: CoachFeesProps) {
   const [isFeeModalOpen, setIsFeeModalOpen] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
+
+  // Real-time Employees and Spreadsheet Filters
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [ledgerSearchQuery, setLedgerSearchQuery] = useState('');
+  const [ledgerCoachFilter, setLedgerCoachFilter] = useState('all');
+  const [ledgerStatusFilter, setLedgerStatusFilter] = useState('all');
+  const [ledgerManagerFilter, setLedgerManagerFilter] = useState('all');
+  const [ledgerMonthFilter, setLedgerMonthFilter] = useState('all');
 
   // New item inputs
   const [newCoach, setNewCoach] = useState<Partial<Coach>>({
@@ -88,57 +99,64 @@ export default function CoachFees(props: CoachFeesProps) {
     const uniqueCoaches = getUniqueCoachesFromTariff();
     const validNames = new Set(COACH_TARIFF_TABLE.map(t => t.coachName));
 
+    const cached = localStorage.getItem('cached_coaches');
+    if (cached) {
+      try {
+        setCoaches(JSON.parse(cached));
+      } catch (e) {
+        // ignore
+      }
+    }
+
     const unsubCoaches = onSnapshot(collection(db, 'coaches'), (snap) => {
       const dbCoaches = snap.docs.map(d => d.data() as Coach);
       if (dbCoaches.length === 0 || dbCoaches.every(c => ['c_001', 'c_002', 'c_003', 'c_004'].includes(c.id))) {
-        uniqueCoaches.forEach(async c => await setDoc(doc(db, 'coaches', c.id), c));
+        if (!coachesSeedAttempted && !isQuotaExceeded()) {
+          coachesSeedAttempted = true;
+          uniqueCoaches.forEach(async c => {
+            try {
+              await setDoc(doc(db, 'coaches', c.id), c);
+            } catch (e) {
+              console.error("Failed to seed coach:", c.id, e);
+            }
+          });
+        }
         setCoaches(uniqueCoaches);
+        localStorage.setItem('cached_coaches', JSON.stringify(uniqueCoaches));
       } else {
         const filtered = dbCoaches.filter(c => validNames.has(c.name));
         const invalid = dbCoaches.filter(c => !validNames.has(c.name));
-        invalid.forEach(async c => {
-          try {
-            await deleteDoc(doc(db, 'coaches', c.id));
-          } catch (e) {
-            console.error("Failed to delete invalid coach:", c.id, e);
-          }
-        });
+        if (!coachesSeedAttempted && !isQuotaExceeded()) {
+          coachesSeedAttempted = true;
+          invalid.forEach(async c => {
+            try {
+              await deleteDoc(doc(db, 'coaches', c.id));
+            } catch (e) {
+              console.error("Failed to delete invalid coach:", c.id, e);
+            }
+          });
+        }
         setCoaches(filtered);
+        localStorage.setItem('cached_coaches', JSON.stringify(filtered));
       }
     }, (error) => {
-      console.error("Firestore coaches load error:", error);
-      setCoaches(uniqueCoaches);
-      handleFirestoreError(error, OperationType.GET, 'coaches');
-    });
+       console.error("Firestore coaches load error:", error);
+       if (!cached) {
+         setCoaches(uniqueCoaches);
+       }
+       handleFirestoreError(error, OperationType.GET, 'coaches', false);
+     });
 
-    const unsubFees = onSnapshot(collection(db, 'coach_fees'), (snap) => {
-      const dbFees = snap.docs.map(d => d.data() as CoachFeeItem);
-      if (dbFees.length === 0) {
-        const validDefaultFees = DEFAULT_COACH_FEES.filter(f => validNames.has(f.coachName));
-        validDefaultFees.forEach(async f => await setDoc(doc(db, 'coach_fees', f.id), f));
-        setCoachFees(validDefaultFees);
-      } else {
-        const filtered = dbFees.filter(f => validNames.has(f.coachName));
-        const invalid = dbFees.filter(f => !validNames.has(f.coachName));
-        invalid.forEach(async f => {
-          try {
-            await deleteDoc(doc(db, 'coach_fees', f.id));
-          } catch (e) {
-            console.error("Failed to delete invalid coach fee:", f.id, e);
-          }
-        });
-        setCoachFees(filtered);
-      }
+    const unsubEmployees = onSnapshot(collection(db, 'employees'), (snap) => {
+      const emps = snap.docs.map(d => d.data());
+      setEmployees(emps);
     }, (error) => {
-      console.error("Firestore coach_fees load error:", error);
-      const validDefaultFees = DEFAULT_COACH_FEES.filter(f => validNames.has(f.coachName));
-      setCoachFees(validDefaultFees);
-      handleFirestoreError(error, OperationType.GET, 'coach_fees');
+      console.error("Firestore employees load error in CoachFees:", error);
     });
 
     return () => {
       unsubCoaches();
-      unsubFees();
+      unsubEmployees();
     };
   }, []);
 
@@ -199,10 +217,113 @@ export default function CoachFees(props: CoachFeesProps) {
     }).format(value);
   };
 
+  // Calculate coached fee based on criteria (tariff table or tier percentage)
+  const calculateFeeForCoach = (coachName: string, salesAmount: number, coachingHours: number, coachingMethod: string = '대면') => {
+    const hours = coachingHours || 1;
+    const salesAmt = salesAmount || 0;
+
+    // 1. Try exact coachName and coachingMethod match
+    let tariffMatch = COACH_TARIFF_TABLE.find(
+      t => t.coachName === coachName && t.method === coachingMethod
+    );
+
+    // 2. If not found, try matching '통합'
+    if (!tariffMatch && coachingMethod !== '통합') {
+      tariffMatch = COACH_TARIFF_TABLE.find(
+        t => t.coachName === coachName && t.method === '통합'
+      );
+    }
+
+    // 3. If still not found, try any method match for this coach
+    if (!tariffMatch) {
+      tariffMatch = COACH_TARIFF_TABLE.find(
+        t => t.coachName === coachName
+      );
+    }
+
+    if (tariffMatch) {
+      if (tariffMatch.feeAmount !== undefined) {
+        return tariffMatch.feeAmount * hours;
+      } else if (tariffMatch.feePercent !== undefined) {
+        return Math.round(salesAmt * (tariffMatch.feePercent / 100));
+      }
+    }
+    
+    // Fallback based on coach tier from records
+    const selectedCoach = coaches.find(c => c.name === coachName);
+    if (selectedCoach) {
+      let rate = 15;
+      if (selectedCoach.tier === 'A') rate = 20;
+      if (selectedCoach.tier === 'B') rate = 15;
+      if (selectedCoach.tier === 'C') rate = 10;
+      return Math.round(salesAmt * (rate / 100));
+    }
+    
+    return Math.round(salesAmt * 0.15); // Fallback to 15%
+  };
+
+  // Derived coachFees from props.sales
+  const coachFees: CoachFeeItem[] = React.useMemo(() => {
+    return (props.sales || [])
+      .filter(sale => sale.coachName && sale.coachName !== '없음' && sale.coachName !== '')
+      .map(sale => {
+        const matchingCoach = coaches.find(c => c.name === sale.coachName);
+        const coachId = matchingCoach ? matchingCoach.id : 'c_fallback';
+        
+        // Smart fallback / inference for coachingMethod
+        let method: '대면' | '비대면' | '통합' | '대입' = sale.coachingMethod || '대면';
+        if (!sale.coachingMethod) {
+          const svc = (sale.registeredService || '').toLowerCase();
+          if (svc.includes('비대면') || svc.includes('온라인') || svc.includes('online')) {
+            method = '비대면';
+          } else if (svc.includes('대입') || svc.includes('입시')) {
+            method = '대입';
+          } else if (svc.includes('통합') || svc.includes('종합')) {
+            method = '통합';
+          }
+        }
+
+        const hasOverride = sale.coachFeeOverride !== undefined && sale.coachFeeOverride !== null;
+        const calculated = hasOverride
+          ? (sale.coachFeeOverride as number)
+          : calculateFeeForCoach(
+              sale.coachName || '없음',
+              sale.amount || 0,
+              sale.coachingHours || 1,
+              method
+            );
+
+        return {
+          id: sale.id,
+          date: sale.registrationDate || (sale.date ? sale.date.replace(/\./g, '-').substring(0, 10).trim() : new Date().toISOString().split('T')[0]),
+          coachId: coachId,
+          coachName: sale.coachName || '임시코치',
+          customerName: sale.customerName || '미지정 수강생',
+          salesAmount: sale.amount || 0,
+          feeRate: 15,
+          calculatedFee: calculated,
+          status: sale.status || 'pending',
+          payoutDate: sale.status === 'completed' ? (sale.registrationDate || sale.date.substring(0, 10)) : undefined,
+          salesId: sale.id,
+          coachingHours: sale.coachingHours || 1,
+          coachingMethod: method,
+          coachFeeOverride: sale.coachFeeOverride,
+          managerName: sale.managerName || ''
+        };
+      });
+  }, [props.sales, coaches]);
+
   // Calculations
   const grandTotalFees = coachFees.reduce((sum, f) => sum + f.calculatedFee, 0);
   const pendingFees = coachFees.filter(f => f.status === 'pending').reduce((sum, f) => sum + f.calculatedFee, 0);
   const completedFees = coachFees.filter(f => f.status === 'completed').reduce((sum, f) => sum + f.calculatedFee, 0);
+  const holdFees = coachFees.filter(f => f.status === 'hold').reduce((sum, f) => sum + f.calculatedFee, 0);
+
+  // Unique months from coachFees
+  const uniqueMonths = React.useMemo(() => {
+    const months = coachFees.map(f => f.date.substring(0, 7));
+    return Array.from(new Set(months)).sort((a, b) => b.localeCompare(a));
+  }, [coachFees]);
 
   // Active filter for coach list detail view
   const activeCoach = selectedCoachId ? coaches.find(c => c.id === selectedCoachId) : null;
@@ -228,13 +349,31 @@ export default function CoachFees(props: CoachFeesProps) {
       joinedDate: new Date().toISOString().split('T')[0],
       status: 'active'
     };
-    await setDoc(doc(db, 'coaches', coachId), item);
-    setIsCoachModalOpen(false);
-    setNewCoach({ name: '', email: '', phone: '', specialty: '', tier: 'A', status: 'active' });
-    showToast(`파트너 코비 ${item.name} 코치가 성공적으로 임명되었습니다.`);
+
+    if (isQuotaExceeded()) {
+      setCoaches(prev => {
+        const next = [...prev, item];
+        localStorage.setItem('cached_coaches', JSON.stringify(next));
+        return next;
+      });
+      setIsCoachModalOpen(false);
+      setNewCoach({ name: '', email: '', phone: '', specialty: '', tier: 'A', status: 'active' });
+      showToast(`파트너 코치 ${item.name} 코치가 성공적으로 임명되었습니다 (로컬 저장).`);
+      return;
+    }
+
+    try {
+      await setDoc(doc(db, 'coaches', coachId), item);
+      setIsCoachModalOpen(false);
+      setNewCoach({ name: '', email: '', phone: '', specialty: '', tier: 'A', status: 'active' });
+      showToast(`파트너 코치 ${item.name} 코치가 성공적으로 임명되었습니다.`);
+    } catch (err: any) {
+      console.error("Failed to create coach:", err);
+      alert("코치 등록 도중 에러 발생: " + err.message);
+    }
   };
 
-  // Add coaching reward fee item
+  // Add coaching reward fee item (Directly registers corresponding sales entry)
   const handleAddFee = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newFee.coachId || !newFee.customerName) {
@@ -253,55 +392,308 @@ export default function CoachFees(props: CoachFeesProps) {
       ? (Number(newFee.calculatedFee) || 0)
       : Math.round(salesAmt * (rate / 100));
 
-    const feeId = `cf_${Date.now()}`;
-    const item: CoachFeeItem = {
-      id: feeId,
-      date: new Date().toISOString().split('T')[0],
-      coachId: selected.id,
-      coachName: selected.name,
+    const saleId = `cf_sale_${Date.now()}`;
+    const defaultManager = employees.find(emp => emp.role === '영업팀' && emp.status === 'active')?.name || '이지원';
+    
+    // Create corresponding sale entry
+    const saleItem: Sale = {
+      id: saleId,
+      date: new Date().toISOString().split('T')[0] + ' 12:00',
       customerName: newFee.customerName,
-      salesAmount: salesAmt,
-      feeRate: rate,
-      calculatedFee: calcFee,
+      managerName: newFee.managerName || defaultManager,
+      coachName: selected.name,
+      amount: salesAmt,
+      feeRate: 10,
+      fee: Math.round((salesAmt / 1.1) * 0.1),
+      profit: salesAmt - Math.round((salesAmt / 1.1) * 0.1),
       status: (newFee.status as any) || 'pending',
-      payoutDate: newFee.status === 'completed' ? new Date().toISOString().split('T')[0] : undefined,
-      salesId: newFee.salesId || undefined,
-      coachingHours: hours
+      inquiryType: 'corporate',
+      coachingHours: hours,
+      registrationDate: new Date().toISOString().split('T')[0],
+      registeredService: '1:1 매칭 전문가 코칭 패키지',
+      notes: '코치 수수료 탭 수기 매칭 등록'
     };
 
-    await setDoc(doc(db, 'coach_fees', feeId), item);
-    setIsFeeModalOpen(false);
-    setNewFee({ coachId: '', customerName: '', salesAmount: 0, feeRate: 20, status: 'pending', coachingMethod: '대면', calculationType: 'tariff', coachingHours: 1, salesId: undefined });
-    showToast(`${selected.name} 코치 수당 (${formatKrw(calcFee)})이 안전하게 매칭 등록되었습니다.`);
-  };
-
-  // Status Change
-  const handleToggleFeeStatus = async (item: CoachFeeItem) => {
-    const isCompleted = item.status === 'completed';
-    const updated: CoachFeeItem = {
-      ...item,
-      status: isCompleted ? 'pending' : 'completed',
-      payoutDate: isCompleted ? undefined : new Date().toISOString().split('T')[0]
-    };
-    await setDoc(doc(db, 'coach_fees', item.id), updated);
-    showToast(`${item.coachName} 코치의 수당 정산 상태가 ${isCompleted ? '정산 대기' : '정산 완료'} 건으로 변경되었습니다.`);
-  };
-
-  // Delete Fee Item
-  const handleDeleteFee = async (id: string, name: string) => {
-    if (confirm(`선택한 코치 수수료 전산 기록 (${name})을 전산에서 영구 삭제 처리하시겠습니까?`)) {
-      await deleteDoc(doc(db, 'coach_fees', id));
-      showToast('코칭 정산 정보가 파기되었습니다.');
+    try {
+      if (props.setSales) {
+        props.setSales(prev => [...prev, saleItem]);
+      } else {
+        await setDoc(doc(db, 'sales', saleId), saleItem);
+      }
+      setIsFeeModalOpen(false);
+      setNewFee({ coachId: '', customerName: '', salesAmount: 0, feeRate: 20, status: 'pending', coachingMethod: '대면', calculationType: 'tariff', coachingHours: 1, salesId: undefined });
+      showToast(`${selected.name} 코치 수당 (${formatKrw(calcFee)}) 및 매출 전표가 연동 계정으로 안전하게 등록되었습니다.`);
+    } catch (err) {
+      console.error("Failed to add coach fee as sale:", err);
+      alert('오류 발생: ' + err);
     }
   };
 
-  // Simulate report download
+  // Individual coach status updater (supports hold and reasons)
+  const handleUpdateCoachFeeStatus = async (item: CoachFeeItem, nextStatus: 'pending' | 'completed' | 'hold') => {
+    const saleId = item.id;
+    let holdReason = item.holdReason || '';
+    if (nextStatus === 'hold' && !holdReason) {
+      const reason = prompt('정산 보류 사유를 입력해 주세요:') || '';
+      holdReason = reason;
+    }
+
+    try {
+      const updatedFields = {
+        status: nextStatus,
+        holdReason: nextStatus === 'hold' ? holdReason : ''
+      };
+      if (props.setSales) {
+        props.setSales(prev => prev.map(s => s.id === saleId ? { ...s, ...updatedFields } : s));
+      } else {
+        await setDoc(doc(db, 'sales', saleId), updatedFields, { merge: true });
+      }
+      showToast(`${item.coachName} 코치 정산 상태가 ${nextStatus === 'completed' ? '정산 완료' : nextStatus === 'hold' ? '정산 보류' : '정산 대기'} 상태로 갱신 완료되었습니다.`);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleUpdateCoachFeeField = async (item: CoachFeeItem, fieldName: string, value: any) => {
+    const saleId = item.id;
+    try {
+      const updatedFields = {
+        [fieldName]: value
+      };
+      if (props.setSales) {
+        props.setSales(prev => prev.map(s => s.id === saleId ? { ...s, ...updatedFields } : s));
+      } else {
+        await setDoc(doc(db, 'sales', saleId), updatedFields, { merge: true });
+      }
+    } catch (err) {
+      console.error("Error updating field:", err);
+    }
+  };
+
+  // Status Change (Toggles status in the sales table)
+  const handleToggleFeeStatus = async (item: CoachFeeItem) => {
+    let nextStatus: 'pending' | 'completed' | 'hold' = 'pending';
+    if (item.status === 'pending') nextStatus = 'completed';
+    else if (item.status === 'completed') nextStatus = 'hold';
+    else if (item.status === 'hold') nextStatus = 'pending';
+
+    await handleUpdateCoachFeeStatus(item, nextStatus);
+  };
+
+  // Delete Fee Item (Deletes from sales database)
+  const handleDeleteFee = async (id: string, name: string) => {
+    if (confirm(`선택한 코치 수수료 전산 기록 (${name})을 완전히 영구 삭제 처리하시겠습니까? (영업/수수료 정산 대장에서 담당코치를 '없음'으로 변경하는 형태로도 연동됩니다)`)) {
+      try {
+        if (id.startsWith('cf_sale_') || id.startsWith('manual_cf_')) {
+          if (props.setSales) {
+            props.setSales(prev => prev.filter(s => s.id !== id));
+          } else {
+            await deleteDoc(doc(db, 'sales', id));
+          }
+          showToast('코치수수료 탭에서 단독 등록된 정산 전표 및 매출 기록이 완전히 파기되었습니다.');
+        } else {
+          const updatedFields = {
+            coachName: '없음',
+            coachingHours: undefined
+          };
+          if (props.setSales) {
+            props.setSales(prev => prev.map(s => s.id === id ? { ...s, ...updatedFields } : s));
+          } else {
+            await setDoc(doc(db, 'sales', id), updatedFields, { merge: true });
+          }
+          showToast('매출 정산 대장에서 해당 건의 담당코치 배정이 해제되었습니다.');
+        }
+      } catch (err) {
+        console.error("Error deleting coach fee sale:", err);
+      }
+    }
+  };
+
+  // Real PDF report generator for coach fees
   const handleDownloadReport = (coachName: string) => {
+    const targetCoach = coachName === 'all' ? '전체_코치팀' : coachName;
     setDownloading(coachName);
     setTimeout(() => {
       setDownloading(null);
-      showToast(`${coachName} 코치의 당월 세무 원천징수 지급 조서가 다운로드 완료되었습니다.`);
+      
+      const list = coachFees.filter(fee => {
+        const matchesSearch = 
+          fee.customerName.toLowerCase().includes(ledgerSearchQuery.toLowerCase()) ||
+          fee.coachName.toLowerCase().includes(ledgerSearchQuery.toLowerCase()) ||
+          (fee.managerName || '').toLowerCase().includes(ledgerSearchQuery.toLowerCase());
+          
+        const matchesCoach = ledgerCoachFilter === 'all' || fee.coachName === ledgerCoachFilter;
+        const matchesStatus = ledgerStatusFilter === 'all' || fee.status === ledgerStatusFilter;
+        const matchesManager = ledgerManagerFilter === 'all' || fee.managerName === ledgerManagerFilter;
+        const matchesMonth = ledgerMonthFilter === 'all' || fee.date.startsWith(ledgerMonthFilter);
+
+        return matchesSearch && matchesCoach && matchesStatus && matchesManager && matchesMonth;
+      });
+
+      const totalHours = list.reduce((sum, f) => sum + (Number(f.coachingHours) || 0), 0);
+      const totalFee = list.reduce((sum, f) => sum + (f.calculatedFee || 0), 0);
+      const totalSales = list.reduce((sum, f) => sum + (f.salesAmount || 0), 0);
+      const itemsCount = list.length;
+      const dateStr = new Date().toISOString().split('T')[0];
+
+      const content = `================================================
+[수수료 명세서] 코치 지도/자문료 지급 명세서
+================================================
+명세 정산자문일 : ${dateStr}
+수신 협력코치   : ${targetCoach} 님 ${ledgerManagerFilter !== 'all' ? `(영업담당: ${ledgerManagerFilter} 필터)` : ''}
+발행 정산 전산  : [주식회사 코칭에이전시 파트너협력 본부]
+------------------------------------------------
+[지도/자문료 정산 핵심 조서]
+- 정산 대상 총 건수 : ${itemsCount} 건
+- 담당 지도수업 총 시간 : ${totalHours} 시간
+- 학생 결제 연동 매출액 : ${formatKrw(totalSales)}
+- 자문 및 강사 수당 (세전): ${formatKrw(totalFee)}
+- 세후 실수령 예상액 : 약 ${formatKrw(Math.round(totalFee * 0.967))} (원천징수 3.3% 공제 시)
+------------------------------------------------
+[코치별 정산 수급 상세 전표]
+${list.map((f, i) => `${i+1}. [일시: ${f.date}] 수강생: ${f.customerName} | 수업유형: ${f.coachingMethod || '통합'} | 배정시간: ${f.coachingHours || 0}H | 수업료: ${formatKrw(f.calculatedFee)}`).join('\n')}
+------------------------------------------------
+위 자문수당 지급 명세 정보가 전산에 의거하여 정당함을 확인하며,
+PDF 지급 내역 증빙 조서를 청구 발행합니다.
+(본 문서는 전자 데이터 원장을 기초로 생성되었습니다.)
+================================================`;
+
+      const blob = new Blob([content], { type: 'application/pdf;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `코치수수료_명세서_${targetCoach}_${dateStr}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      showToast(`${targetCoach} 코치 님의 수수료 명세서(PDF)가 컴퓨터에 안전하게 전송되었습니다.`);
     }, 1500);
+  };
+
+  // Change individual cells of a row (Propagates back to shared sales database)
+  const handleCellChange = async (fee: CoachFeeItem, field: keyof CoachFeeItem, value: any) => {
+    const saleId = fee.id;
+    
+    try {
+      const existingSale = props.sales.find(s => s.id === saleId);
+      if (!existingSale) return;
+      
+      let updatedFields: Partial<Sale> = {};
+      
+      if (field === 'coachName') {
+        updatedFields.coachName = value;
+        // Reset manual override to trigger recalculation of tariff
+        updatedFields.coachFeeOverride = null;
+      } else if (field === 'coachingMethod') {
+        updatedFields.coachingMethod = value as any;
+        // Reset manual override to trigger recalculation of tariff
+        updatedFields.coachFeeOverride = null;
+      } else if (field === 'customerName') {
+        updatedFields.customerName = value;
+      } else if (field === 'date') {
+        updatedFields.registrationDate = value;
+        updatedFields.date = value + ' 12:00';
+      } else if (field === 'managerName') {
+        updatedFields.managerName = value;
+      } else if (field === 'coachingHours') {
+        updatedFields.coachingHours = Number(value) || 1;
+        // Reset manual override to trigger recalculation of tariff
+        updatedFields.coachFeeOverride = null;
+      } else if (field === 'calculatedFee') {
+        updatedFields.coachFeeOverride = Number(value);
+      } else if (field === 'salesAmount') {
+        const amt = Number(value) || 0;
+        updatedFields.amount = amt;
+        
+        // Recalculate salesperson fee if it's there
+        const inquiryType = existingSale.inquiryType || 'corporate';
+        const rate = inquiryType === 'corporate' ? 10 : 20;
+        const baseAmount = amt / 1.1;
+        const computedFee = Math.round(baseAmount * (rate / 100));
+        updatedFields.fee = computedFee;
+        updatedFields.profit = amt - computedFee;
+      } else if (field === 'status') {
+        updatedFields.status = value as 'pending' | 'completed';
+      }
+      
+      if (Object.keys(updatedFields).length > 0) {
+        if (props.setSales) {
+          props.setSales(prev => prev.map(s => s.id === saleId ? { ...s, ...updatedFields } : s));
+        } else {
+          await setDoc(doc(db, 'sales', saleId), updatedFields, { merge: true });
+        }
+        showToast('스프레드시트 편집 값이 전체 전산에 일방 동기화 및 갱신되었습니다.');
+      }
+    } catch (e) {
+      console.error("Failed to update cell:", e);
+    }
+  };
+
+  // Create a new direct row in our interactive spreadsheet
+  const handleAddNewRow = async () => {
+    const saleId = `cf_sale_${Date.now()}`;
+    const defaultCoach = coaches[0]?.name || '강경원';
+    const defaultManager = employees.find(e => e.role === '영업팀' && e.status === 'active')?.name || '이지원';
+    const defaultDate = new Date().toISOString().split('T')[0];
+    
+    const newSale: Sale = {
+      id: saleId,
+      date: defaultDate + ' 12:00',
+      customerName: '신규 수강생',
+      managerName: defaultManager,
+      coachName: defaultCoach,
+      coachingMethod: '대면',
+      amount: 1100000,
+      feeRate: 10,
+      fee: 100000,
+      profit: 1000000,
+      status: 'pending',
+      inquiryType: 'corporate',
+      coachingHours: 1,
+      registrationDate: defaultDate,
+      registeredService: '1:1 전문가 코칭 매칭',
+      notes: '코치 수수료 탭 수기 행 추가'
+    };
+    
+    if (props.setSales) {
+      props.setSales(prev => [...prev, newSale]);
+    } else {
+      await setDoc(doc(db, 'sales', saleId), newSale);
+    }
+    showToast('새로운 코칭 정산 및 대응 매출 전표가 스프레드시트에 연동 추가되었습니다.');
+  };
+
+  // Download entire Coach Fees ledger into Excel spreadsheet format
+  const handleDownloadExcel = () => {
+    const headers = ['담당코치', '코칭방식', '수강생명', '등록일', '영업담당', '코칭시간', '코칭수수료', '매출액', '정산상태'];
+    
+    const rows = coachFees.map(f => {
+      const manager = f.managerName || '배정 대기';
+      const statusStr = f.status === 'completed' ? '정산완료' : '정산대기';
+      return [
+        `"${f.coachName.replace(/"/g, '""')}"`,
+        `"${(f.coachingMethod || '대면').replace(/"/g, '""')}"`,
+        `"${f.customerName.replace(/"/g, '""')}"`,
+        f.date,
+        `"${manager.replace(/"/g, '""')}"`,
+        f.coachingHours || 1,
+        f.calculatedFee,
+        f.salesAmount,
+        statusStr
+      ];
+    });
+
+    const csvContent = "\uFEFF" + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `코치_지도_수수료_스프레드시트_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('코칭 정산 스프레드시트가 Excel(.csv) 파일로 완료되었습니다.');
   };
 
   // Filtered tariff table
@@ -387,7 +779,7 @@ export default function CoachFees(props: CoachFeesProps) {
       {activeSubTab === 'ledger' ? (
         <>
           {/* KPI Stats Panel */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6" id="coach_kpis">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6" id="coach_kpis">
             <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex items-center space-x-4">
               <div className="h-12 w-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
                 <Clock className="h-6 w-6" />
@@ -411,6 +803,17 @@ export default function CoachFees(props: CoachFeesProps) {
             </div>
 
             <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex items-center space-x-4">
+              <div className="h-12 w-12 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                <AlertCircle className="h-6 w-6" />
+              </div>
+              <div>
+                <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider">보류 중 코치 수수료</span>
+                <strong className="text-xl font-bold font-mono text-rose-600 block mt-0.5">{formatKrw(holdFees)}</strong>
+                <span className="text-[10px] text-slate-400 block mt-1">보류 사유가 기입된 수수료</span>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs flex items-center space-x-4">
               <div className="h-12 w-12 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center shrink-0">
                 <Coins className="h-6 w-6" />
               </div>
@@ -422,177 +825,365 @@ export default function CoachFees(props: CoachFeesProps) {
             </div>
           </div>
 
-          {/* Two Column Layout: Coahces List (Left) , Detailed matching commissions (Right) */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" id="coach_settlement_grid">
-            
-            {/* Left Column: Coaches cards */}
-            <div className="lg:col-span-4 space-y-4">
-              <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">전문가 코치 라인업</h3>
-              <div className="space-y-3">
-                <div 
-                  onClick={() => setSelectedCoachId(null)}
-                  className={`p-4 rounded-2xl border transition-all cursor-pointer font-sans ${
-                    selectedCoachId === null 
-                      ? 'bg-slate-900 border-slate-900 text-white shadow-lg' 
-                      : 'bg-white border-slate-200 text-slate-800 hover:border-slate-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-sm">전체 파트너 코치 수수료 보기</span>
-                    <ChevronRight className="h-4 w-4" />
-                  </div>
+          {/* Spreadsheet Filter Toolbar */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+            <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Search query */}
+                <div className="relative min-w-[200px]">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={ledgerSearchQuery}
+                    onChange={(e) => setLedgerSearchQuery(e.target.value)}
+                    placeholder="수강생명, 코치명, 영업담당 검색..."
+                    className="pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-xl w-60 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-sans font-medium"
+                  />
                 </div>
 
-                {coaches.map(c => {
-                  const isSelected = selectedCoachId === c.id;
-                  const coachTotal = coachFees.filter(f => f.coachId === c.id).reduce((sum, f) => sum + f.calculatedFee, 0);
-                  const coachPending = coachFees.filter(f => f.coachId === c.id && f.status === 'pending').reduce((sum, f) => sum + f.calculatedFee, 0);
+                {/* Coach Filter */}
+                <select
+                  value={ledgerCoachFilter}
+                  onChange={(e) => setLedgerCoachFilter(e.target.value)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 font-semibold text-slate-705"
+                >
+                  <option value="all">전체 담당코치</option>
+                  {Array.from(new Set(coachFees.map(f => f.coachName))).sort().map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
 
-                  return (
-                    <div
-                      key={c.id}
-                      onClick={() => setSelectedCoachId(c.id)}
-                      className={`
-                        p-5 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group
-                        ${isSelected 
-                          ? 'bg-slate-900 border-slate-900 text-white shadow-lg' 
-                          : 'bg-white border-slate-200 text-slate-800 hover:border-slate-300'
-                        }
-                      `}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center space-x-2.5">
-                          <div className={`h-8 w-8 rounded-lg flex items-center justify-center font-bold text-xs ${
-                            isSelected ? 'bg-slate-800 text-emerald-400' : 'bg-slate-50 text-slate-500'
-                          }`}>
-                            T{c.tier}
-                          </div>
-                          <div>
-                            <span className="font-bold text-sm tracking-tight block">{c.name}</span>
-                            <span className={`text-[10px] ${isSelected ? 'text-slate-400' : 'text-slate-400'}`}>{c.specialty}</span>
-                          </div>
-                        </div>
-                        <ChevronRight className="h-4 w-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
-                      </div>
+                {/* Manager Filter */}
+                <select
+                  value={ledgerManagerFilter}
+                  onChange={(e) => setLedgerManagerFilter(e.target.value)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 font-semibold text-slate-705"
+                >
+                  <option value="all">전체 영업담당</option>
+                  {Array.from(new Set(coachFees.map(f => f.managerName || '').filter(Boolean))).sort().map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
 
-                      <div className="mt-4 flex justify-between items-center text-xs">
-                        <div>
-                          <span className="text-slate-400 block text-[10px]">지급 완료 수당</span>
-                          <strong className="font-mono mt-0.5 block">{formatKrw(coachTotal - coachPending)}</strong>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-amber-500 block text-[10px]">승인 대기 수당</span>
-                          <strong className="font-mono mt-0.5 text-amber-500 block">{formatKrw(coachPending)}</strong>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                {/* Status Filter */}
+                <select
+                  value={ledgerStatusFilter}
+                  onChange={(e) => setLedgerStatusFilter(e.target.value)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 font-semibold text-slate-705"
+                >
+                  <option value="all">전체 정산상태</option>
+                  <option value="pending">정산 대기</option>
+                  <option value="completed">정산 완료</option>
+                  <option value="hold">정산 보류</option>
+                </select>
+
+                {/* Month Filter */}
+                <select
+                  value={ledgerMonthFilter}
+                  onChange={(e) => setLedgerMonthFilter(e.target.value)}
+                  className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 font-semibold text-slate-705"
+                  id="ledger_month_filter"
+                >
+                  <option value="all">전체 월필터</option>
+                  {uniqueMonths.map(m => (
+                    <option key={m} value={m}>{m.replace('-', '년 ')}월</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center space-x-2.5">
+                <button
+                  type="button"
+                  onClick={handleAddNewRow}
+                  className="flex items-center justify-center space-x-2 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition duration-75 shadow-xs cursor-pointer"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>수수료 행 추가 (+Row)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadExcel}
+                  className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition duration-75 shadow-lg shadow-emerald-500/10 cursor-pointer"
+                >
+                  <Download className="h-4 w-4" />
+                  <span>Excel 다운로드</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleDownloadReport(ledgerCoachFilter)}
+                  disabled={downloading !== null}
+                  className="flex items-center justify-center space-x-2 bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition duration-75 shadow-lg shadow-rose-500/10 cursor-pointer disabled:opacity-50"
+                >
+                  {downloading === ledgerCoachFilter ? (
+                    <>
+                      <svg className="animate-spin h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      <span>PDF 생성 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="h-4 w-4" />
+                      <span>{ledgerCoachFilter === 'all' ? '전체' : ledgerCoachFilter} PDF 명세서</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
 
-            {/* Right Column: Matched commissions ledger */}
-            <div className="lg:col-span-8 space-y-4">
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900 tracking-tight">
-                      {activeCoach ? `${activeCoach.name} 코치 수수료 지급 대장` : '전체 코치 지출 수수료 정산장'}
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-0.5">매입 계약 건에 대한 코칭 지도료 매칭 목록 및 정산 상태 관리</p>
-                  </div>
-                  
-                  {activeCoach && (
-                    <button
-                      onClick={() => handleDownloadReport(activeCoach.name)}
-                      disabled={downloading !== null}
-                      className="flex items-center justify-center space-x-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl py-2 px-3 text-xs font-bold transition"
-                    >
-                      {downloading === activeCoach.name ? (
-                        <span>전표 생성중...</span>
-                      ) : (
+            {/* Excel-like Interactive Spreadsheet Grid */}
+            <div className="border border-slate-200 rounded-2xl overflow-hidden bg-slate-50 relative shadow-xs">
+              <div className="overflow-x-auto max-h-[600px]">
+                <table className="w-full text-left border-collapse bg-white text-sm">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-xs font-bold uppercase tracking-wider sticky top-0 z-10">
+                      <th className="p-3 border-r border-slate-200 min-w-[130px]">담당코치</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[110px]">코칭방식</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[140px]">수강생명</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[140px] text-center">등록일</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[130px]">영업담당</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[90px] text-center">코칭시간</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[155px] text-right">코칭수수료</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[165px] text-right">매출액</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[110px] text-center">정산상태</th>
+                      <th className="p-3 text-center min-w-[50px]">삭제</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {/* Computed helper array for the spreadsheet view */}
+                    {(() => {
+                      const list = coachFees.filter(fee => {
+                        const matchesSearch = 
+                          fee.customerName.toLowerCase().includes(ledgerSearchQuery.toLowerCase()) ||
+                          fee.coachName.toLowerCase().includes(ledgerSearchQuery.toLowerCase()) ||
+                          (fee.managerName || '').toLowerCase().includes(ledgerSearchQuery.toLowerCase());
+                          
+                        const matchesCoach = ledgerCoachFilter === 'all' || fee.coachName === ledgerCoachFilter;
+                        const matchesStatus = ledgerStatusFilter === 'all' || fee.status === ledgerStatusFilter;
+                        const matchesManager = ledgerManagerFilter === 'all' || fee.managerName === ledgerManagerFilter;
+                        const matchesMonth = ledgerMonthFilter === 'all' || fee.date.startsWith(ledgerMonthFilter);
+
+                        return matchesSearch && matchesCoach && matchesStatus && matchesManager && matchesMonth;
+                      });
+
+                      if (list.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={10} className="p-20 text-center text-slate-400 font-sans">
+                              <Award className="h-10 w-10 text-slate-300 mx-auto mb-3" />
+                              스프레드시트에 일치하는 수수료 정산 데이터가 없습니다.
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      // Dynamic summation
+                      const sumSales = list.reduce((s, f) => s + (f.salesAmount || 0), 0);
+                      const sumFees = list.reduce((s, f) => s + (f.calculatedFee || 0), 0);
+                      const sumHours = list.reduce((s, f) => s + (f.coachingHours || 0), 0);
+
+                      return (
                         <>
-                          <Download className="h-3.5 w-3.5" />
-                          <span>원천전표 (조서)</span>
+                          {list.map((fee) => (
+                            <tr key={fee.id} className="hover:bg-slate-50/50 border-b border-slate-200 duration-75">
+                              {/* 1. 담당코치 */}
+                              <td className="p-1 border-r border-slate-200 bg-white">
+                                <select
+                                  value={fee.coachName}
+                                  onChange={(e) => handleCellChange(fee, 'coachName', e.target.value)}
+                                  className="w-full bg-transparent p-1.5 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-800 text-xs"
+                                >
+                                  {Array.from(new Set(COACH_TARIFF_TABLE.map(t => t.coachName))).sort().map(name => (
+                                    <option key={name} value={name}>{name}</option>
+                                  ))}
+                                </select>
+                              </td>
+
+                              {/* 1.5 코칭방식 (대면/비대면/통합/대입) */}
+                              <td className="p-1 border-r border-slate-200 bg-white">
+                                <select
+                                  value={fee.coachingMethod || '대면'}
+                                  onChange={(e) => handleCellChange(fee, 'coachingMethod', e.target.value)}
+                                  className="w-full bg-transparent p-1.5 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-800 text-xs"
+                                >
+                                  <option value="대면">대면</option>
+                                  <option value="비대면">비대면</option>
+                                  <option value="통합">통합</option>
+                                  <option value="대입">대입</option>
+                                </select>
+                              </td>
+
+                              {/* 2. 수강생명 */}
+                              <td className="p-1 border-r border-slate-200 bg-white">
+                                <input
+                                  type="text"
+                                  key={`${fee.id}_student_${fee.customerName}`}
+                                  defaultValue={fee.customerName}
+                                  onBlur={(e) => handleCellChange(fee, 'customerName', e.target.value)}
+                                  className="w-full bg-transparent p-1.5 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-semibold text-slate-800 text-xs"
+                                  placeholder="수강생명 입력"
+                                />
+                              </td>
+
+                              {/* 3. 등록일 */}
+                              <td className="p-1 border-r border-slate-200 text-center bg-white">
+                                <input
+                                  type="date"
+                                  value={fee.date}
+                                  onChange={(e) => handleCellChange(fee, 'date', e.target.value)}
+                                  className="w-full bg-transparent p-1 text-center font-mono focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded text-slate-700 text-xs font-semibold"
+                                />
+                              </td>
+
+                              {/* 4. 영업담당 */}
+                              <td className="p-1 border-r border-slate-200 bg-white">
+                                <select
+                                  value={fee.managerName || ''}
+                                  onChange={(e) => handleCellChange(fee, 'managerName', e.target.value)}
+                                  className="w-full bg-transparent p-1.5 font-semibold focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded text-slate-800 text-xs"
+                                >
+                                  <option value="">배정 대기 (None)</option>
+                                  {employees
+                                    .filter(e => e.role === '영업팀')
+                                    .sort((a, b) => a.name.localeCompare(b.name))
+                                    .map(e => (
+                                      <option key={e.id || e.name} value={e.name}>{e.name}</option>
+                                    ))
+                                  }
+                                </select>
+                              </td>
+
+                              {/* 5. 코칭시간 */}
+                              <td className="p-1 border-r border-slate-200 text-center bg-white">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  key={`${fee.id}_hours_${fee.coachingHours}`}
+                                  defaultValue={fee.coachingHours || 1}
+                                  onBlur={(e) => handleCellChange(fee, 'coachingHours', Number(e.target.value))}
+                                  className="w-full bg-transparent p-1 text-center font-mono focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-805 text-xs"
+                                />
+                              </td>
+
+                              {/* 6. 코칭수수료 (Calculated automatically, editable manually) */}
+                              <td className="p-1 border-r border-slate-200 bg-white">
+                                <div className="flex flex-col items-stretch justify-center px-1">
+                                  <div className="flex items-center space-x-1 justify-end">
+                                    <input
+                                      type="number"
+                                      key={`${fee.id}_calcfee_${fee.calculatedFee}`}
+                                      defaultValue={fee.calculatedFee || 0}
+                                      onBlur={(e) => handleCellChange(fee, 'calculatedFee', Number(e.target.value))}
+                                      className="text-right w-full bg-transparent p-1 font-mono font-bold text-emerald-600 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded text-xs"
+                                    />
+                                    <span className="text-[10px] text-slate-400 shrink-0 select-none font-sans font-medium">원</span>
+                                  </div>
+                                  {/* 시간당 단가 정보 표시 */}
+                                  {(() => {
+                                    const match = COACH_TARIFF_TABLE.find(
+                                      t => t.coachName === fee.coachName && t.method === (fee.coachingMethod || '대면')
+                                    );
+                                    if (match?.feeAmount) {
+                                      return (
+                                        <div className="text-[9px] text-slate-400 font-medium text-right pr-4 mt-0.5">
+                                          (시간당 {formatKrw(match.feeAmount)})
+                                        </div>
+                                      );
+                                    } else if (match?.feePercent) {
+                                      return (
+                                        <div className="text-[9px] text-slate-400 font-medium text-right pr-4 mt-0.5">
+                                          ({match.feePercent}% 요율 정산)
+                                        </div>
+                                      );
+                                    }
+                                    return (
+                                      <div className="text-[9px] text-slate-400 font-medium text-right pr-4 mt-0.5">
+                                        (등급별 비율 정산)
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              </td>
+
+                              {/* 7. 매출액 */}
+                              <td className="p-1 border-r border-slate-200 bg-white">
+                                <div className="flex items-center space-x-1 justify-end">
+                                  <input
+                                    type="number"
+                                    key={`${fee.id}_salesamt_${fee.salesAmount}`}
+                                    defaultValue={fee.salesAmount || 0}
+                                    onBlur={(e) => handleCellChange(fee, 'salesAmount', Number(e.target.value))}
+                                    className="text-right w-28 bg-transparent p-1 font-mono focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-800 text-xs"
+                                  />
+                                  <span className="text-[10px] text-slate-400 shrink-0 select-none">원</span>
+                                </div>
+                              </td>
+
+                              {/* 정산상태 */}
+                              <td className="p-1 border-r border-slate-200 text-center bg-white whitespace-nowrap min-w-[130px]">
+                                <select
+                                  value={fee.status || 'pending'}
+                                  onChange={(e) => handleUpdateCoachFeeStatus(fee, e.target.value as any)}
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border cursor-pointer bg-white transition-all text-center focus:outline-none ${
+                                    fee.status === 'completed'
+                                      ? 'text-emerald-700 border-emerald-250 bg-emerald-50 hover:bg-emerald-100'
+                                      : fee.status === 'hold'
+                                      ? 'text-rose-700 border-rose-250 bg-rose-50 hover:bg-rose-100 font-extrabold'
+                                      : 'text-amber-700 border-amber-250 bg-amber-50 hover:bg-amber-100'
+                                  }`}
+                                >
+                                  <option value="pending">🟡 정산대기</option>
+                                  <option value="completed">🟢 정산완료</option>
+                                  <option value="hold">🔴 정산보류</option>
+                                </select>
+                                {fee.status === 'hold' && (
+                                  <div className="mt-1 flex justify-center px-1">
+                                    <input
+                                      type="text"
+                                      placeholder="보류 사유 입력"
+                                      value={fee.holdReason || ''}
+                                      onChange={(e) => handleUpdateCoachFeeField(fee, 'holdReason', e.target.value)}
+                                      className="w-28 text-[10px] p-1 border border-rose-200 bg-rose-50/20 text-rose-850 placeholder-rose-350 rounded focus:outline-none text-center"
+                                    />
+                                  </div>
+                                )}
+                              </td>
+
+                              {/* 삭제 */}
+                              <td className="p-1 text-center bg-white">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteFee(fee.id, `${fee.coachName} - ${fee.customerName}`)}
+                                  className="text-slate-300 hover:text-rose-500 duration-70 p-1 rounded hover:bg-rose-50 cursor-pointer"
+                                >
+                                  <Trash2 className="w-4 h-4 mx-auto" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+
+                          {/* Excel-style calculations Summary Footer Row */}
+                          <tr className="bg-emerald-50/50 border-t-2 border-emerald-500 font-bold block-table-row text-slate-900 text-xs">
+                            <td className="p-3 border-r border-slate-200 text-center text-emerald-800 font-bold">계 (Total Sum)</td>
+                            <td className="p-3 border-r border-slate-200 text-slate-400 text-center">-</td>
+                            <td className="p-3 border-r border-slate-200 text-slate-400 text-center">-</td>
+                            <td className="p-3 border-r border-slate-200 text-slate-400 text-center">-</td>
+                            <td className="p-3 border-r border-slate-200 text-slate-400 text-center">-</td>
+                            <td className="p-3 border-r border-slate-200 text-center font-mono text-slate-805">{sumHours}시간</td>
+                            <td className="p-3 border-r border-slate-200 text-right font-mono text-emerald-700">{formatKrw(sumFees)}</td>
+                            <td className="p-3 border-r border-slate-200 text-right font-mono text-slate-900">{formatKrw(sumSales)}</td>
+                            <td className="p-3 border-r border-slate-200 text-slate-404 text-center">-</td>
+                            <td className="p-3 text-slate-404 text-center">-</td>
+                          </tr>
                         </>
-                      )}
-                    </button>
-                  )}
-                </div>
-
-                {/* List */}
-                <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-                  {activeCoachFees.length > 0 ? (
-                    activeCoachFees.map((fee) => (
-                      <div 
-                        key={fee.id}
-                        className="p-4 rounded-xl border border-slate-150 bg-slate-50/50 hover:bg-slate-50 duration-75 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                      >
-                        <div>
-                          <div className="flex items-center space-x-2">
-                            <span className="font-mono text-slate-400 font-bold">{fee.date}</span>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-100">코칭수당</span>
-                            {fee.salesId && (
-                              <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-md font-bold flex items-center space-x-0.5">
-                                <span>🔗 전표연계</span>
-                              </span>
-                            )}
-                          </div>
-                          <h4 className="font-black text-slate-950 text-sm mt-1">{fee.coachName} <span className="text-xs font-normal text-slate-500">→ 대상원생: {fee.customerName}</span></h4>
-                          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-500 font-medium">
-                            <span>원생매출: <strong className="font-mono text-slate-750 font-bold">{formatKrw(fee.salesAmount)}</strong></span>
-                            <span>코칭시간: <strong className="font-mono text-slate-750 font-bold">{fee.coachingHours || 1}시간</strong></span>
-                            <span>요율수립: <strong className="font-mono text-emerald-600 font-bold">{fee.feeRate > 0 ? `${fee.feeRate}% 비례` : '고정요율제'}</strong></span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between sm:justify-end gap-3 border-t border-slate-200/50 sm:border-0 pt-2 sm:pt-0">
-                          <div className="text-right">
-                            <span className="text-slate-400 block text-[10px]">수당 정액</span>
-                            <strong className="text-slate-950 font-mono font-bold text-sm block">{formatKrw(fee.calculatedFee)}</strong>
-                          </div>
-
-                          <div className="flex items-center space-x-1.5">
-                            <button
-                              onClick={() => handleToggleFeeStatus(fee)}
-                              className={`
-                                px-3 py-1.5 rounded-lg border font-bold duration-100 flex items-center space-x-1 cursor-pointer text-[11px]
-                                ${fee.status === 'completed'
-                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100'
-                                  : 'bg-amber-50 text-amber-700 border-amber-100 hover:bg-amber-100'
-                                }
-                              `}
-                            >
-                              {fee.status === 'completed' ? (
-                                <>
-                                  <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                                  <span>회계승인완료</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Clock className="w-3.5 h-3.5 text-amber-500" />
-                                  <span>정산 대기</span>
-                                </>
-                              )}
-                            </button>
-                            
-                            <button
-                              onClick={() => handleDeleteFee(fee.id, fee.coachName + ' - ' + fee.customerName)}
-                              className="p-1 text-slate-350 hover:text-rose-500 hover:bg-rose-50/50 rounded-lg cursor-pointer"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="py-20 text-center text-slate-400 font-sans border border-dashed border-slate-200 rounded-2xl bg-slate-50">
-                      <Award className="h-10 w-10 text-slate-200 mx-auto mb-3" />
-                      동 매칭 정보에 부합하는 지급 수수료 지급 대장이 전산상에 없습니다.
-                    </div>
-                  )}
-                </div>
+                      );
+                    })()}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>

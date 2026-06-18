@@ -17,10 +17,10 @@ import {
   UserCircle,
   Award,
   Percent,
-  Users
+  Users,
+  Key
 } from 'lucide-react';
 import { User } from '../types';
-import logoUrl from '../assets/images/coachingpass_logo.png';
 
 interface SidebarProps {
   activeTab: string;
@@ -33,7 +33,8 @@ interface SidebarProps {
 export default function Sidebar(props: SidebarProps) {
   const [isOpenMobile, setIsOpenMobile] = useState(false);
 
-  const menuItems = [
+  // Full menu list
+  const fullMenuItems = [
     { id: 'dashboard', label: '종합 대시보드', icon: Columns3 },
     { id: 'sales', label: '매출 지표 관리', icon: TrendingUp },
     { id: 'settlement', label: '수수료 & 정산', icon: DollarSign },
@@ -41,8 +42,31 @@ export default function Sidebar(props: SidebarProps) {
     { id: 'sales_fees', label: '영업 수수료', icon: Percent },
     { id: 'employees', label: '임직원', icon: Users },
     { id: 'analytics', label: '심층 요약 분석', icon: BarChart3 },
+    { id: 'accounts', label: '계정 생성 및 관리', icon: Key },
     { id: 'settings', label: '시스템 설정', icon: SettingsIcon },
   ];
+
+  // Filter menu items by role
+  const getMenuItems = () => {
+    const role = props.user.role;
+    if (role === 'admin' || role === 'manager') {
+      return fullMenuItems;
+    }
+    if (role === '영업팀') {
+      return fullMenuItems.filter(item => 
+        item.id === 'dashboard' || item.id === 'sales' || item.id === 'sales_fees'
+      );
+    }
+    if (role === '코치') {
+      return fullMenuItems.filter(item => 
+        item.id === 'dashboard' || item.id === 'coach_fees'
+      );
+    }
+    // Default fallback
+    return fullMenuItems;
+  };
+
+  const menuItems = getMenuItems();
 
   const handleTabChange = (tabId: string) => {
     props.setActiveTab(tabId);
@@ -54,11 +78,11 @@ export default function Sidebar(props: SidebarProps) {
       {/* Mobile Header Bar */}
       <header className="lg:hidden bg-slate-950 text-white font-sans h-16 px-4 flex items-center justify-between border-b border-slate-800 shrink-0 w-full sticky top-0 z-50">
         <div className="flex items-center space-x-2">
-          <div className="h-9 w-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center overflow-hidden shadow-lg shrink-0">
-            <img
-              src={logoUrl}
-              className="h-full w-full object-contain p-1"
-              alt="코칭패스 CRM"
+          <div className="h-9 w-9 rounded-lg bg-black border border-amber-500/30 flex items-center justify-center overflow-hidden shadow-lg shrink-0">
+            <img 
+              src="/src/assets/images/coachingpass_logo_1780933492848.png" 
+              className="h-full w-full object-cover" 
+              alt="코칭패스 CRM" 
               referrerPolicy="no-referrer"
             />
           </div>
@@ -90,11 +114,11 @@ export default function Sidebar(props: SidebarProps) {
         <div>
           <div className="h-20 flex items-center px-6 border-b border-slate-900 justify-between">
             <div className="flex items-center space-x-2.5">
-              <div className="h-10 w-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center overflow-hidden shadow-lg shadow-slate-300/10 shrink-0">
-                <img
-                  src={logoUrl}
-                  className="h-full w-full object-contain p-1"
-                  alt="코칭패스 CRM"
+              <div className="h-10 w-10 rounded-xl bg-black border border-amber-500/30 flex items-center justify-center overflow-hidden shadow-lg shadow-amber-500/10 shrink-0">
+                <img 
+                  src="/src/assets/images/coachingpass_logo_1780933492848.png" 
+                  className="h-full w-full object-cover" 
+                  alt="코칭패스 CRM" 
                   referrerPolicy="no-referrer"
                 />
               </div>
@@ -156,8 +180,16 @@ export default function Sidebar(props: SidebarProps) {
               <span className="text-sm font-bold text-white block truncate">{props.user.name}</span>
               <span className="text-xs text-slate-500 block truncate font-mono">{props.user.email}</span>
             </div>
-            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded capitalize ${props.user.role === 'admin' ? 'bg-red-500/15 text-red-400 border border-red-500/20' : 'bg-slate-700 text-slate-300'}`}>
-              {props.user.role === 'admin' ? '총괄자' : '담당자'}
+            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded capitalize ${
+              props.user.role === 'admin' 
+                ? 'bg-rose-500/15 text-rose-400 border border-rose-500/20' 
+                : props.user.role === '영업팀'
+                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
+                : props.user.role === '코치'
+                ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/20'
+                : 'bg-slate-700 text-slate-300'
+            }`}>
+              {props.user.role === 'admin' ? '총괄자' : props.user.role === '영업팀' ? '영업팀' : props.user.role === '코치' ? '코치단' : '담당자'}
             </span>
           </div>
 

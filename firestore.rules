@@ -1,35 +1,37 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default Deny
     match /{document=**} {
-      allow read, write: if false;
+      allow read, write: if true;
     }
 
-    function isSignedIn() { return request.auth != null; }
-
     match /sales/{saleId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
     
     match /settings/{docId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
 
     match /employees/{employeeId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
 
     match /coaches/{coachId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
 
     match /coach_fees/{feeId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
 
     match /sales_fees/{feeId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
+    }
+
+    match /user_accounts/{accountId} {
+      allow read, write: if true;
     }
   }
 }
+

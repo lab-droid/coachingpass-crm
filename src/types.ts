@@ -7,8 +7,19 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'manager';
+  role: 'admin' | 'manager' | '영업팀' | '코치';
   avatarUrl?: string;
+  employeeId?: string;
+}
+
+export interface UserAccount {
+  id: string;
+  email: string; // 로그인 ID/이메일
+  password?: string; // 비밀번호
+  name: string; // 직원 및 코칭 매칭 본명
+  role: 'admin' | '영업팀' | '코치';
+  employeeId?: string; // 임직원 ID (emp_xxx) 혹은 코치 ID (coach_xxx)
+  status: 'active' | 'inactive';
 }
 
 export interface Sale {
@@ -20,14 +31,18 @@ export interface Sale {
   feeRate: number; // 수수료율 (%, 예. 15)
   profit: number; // 영업이익 = 매출액 * (1 - feeRate/100)
   fee: number; // 수수료 = 매출액 * (feeRate/100)
-  status: 'pending' | 'completed'; // 정산대기, 정산완료
+  status: 'pending' | 'completed' | 'hold'; // 정산대기, 정산완료, 정산보류
+  holdReason?: string;
   notes?: string;
   inquiryType?: 'personal' | 'corporate'; // 개인문의, 회사문의
   inquiryDate?: string;
   coachName?: string;
+  coachingMethod?: '통합' | '대면' | '비대면' | '대입';
   registeredService?: string;
   coachingHours?: number;
   registrationDate?: string;
+  isManagerManuallyEdited?: boolean;
+  coachFeeOverride?: number | null;
 
   // I'mweb details
   imwebData?: {
@@ -96,10 +111,14 @@ export interface CoachFeeItem {
   salesAmount: number;
   feeRate: number;
   calculatedFee: number;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'hold';
+  holdReason?: string;
   payoutDate?: string;
   salesId?: string;
   coachingHours?: number;
+  coachingMethod?: '통합' | '대면' | '비대면' | '대입';
+  managerName?: string;
+  coachFeeOverride?: number | null;
 }
 
 export interface SalesFeeItem {
@@ -111,7 +130,16 @@ export interface SalesFeeItem {
   salesAmount: number;
   commissionRate: number;
   calculatedFee: number;
-  status: 'pending' | 'completed';
+  status: 'pending' | 'completed' | 'hold';
+  holdReason?: string;
   payoutDate?: string;
   salesId?: string;
+  vat?: number;
+  supplyPrice?: number;
+  commission?: number;
+  businessTax?: number;
+  residentTax?: number;
+  netFee?: number;
+  inquiryType?: 'personal' | 'corporate';
+  coachName?: string;
 }

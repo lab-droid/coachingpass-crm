@@ -43,11 +43,24 @@ export default function Analytics(props: AnalyticsProps) {
   const [endDate, setEndDate] = useState('2026-06-30');
   const [selectedManager, setSelectedManager] = useState('all');
 
+  // Extract unique manager names from the actual sales records
+  const uniqueManagerNamesInSales = React.useMemo(() => {
+    const names = new Set<string>();
+    props.sales.forEach(s => {
+      if (s.managerName && s.managerName !== '배정 대기') {
+        const cleanName = s.managerName.split(' ')[0];
+        names.add(cleanName);
+      }
+    });
+    return Array.from(names);
+  }, [props.sales]);
+
   // 필터 통과한 매출 데이터 산출
   const filteredSales = props.sales.filter((sale) => {
     const saleDate = sale.date;
     const matchesDate = saleDate >= startDate && saleDate <= endDate;
-    const matchesManager = selectedManager === 'all' || sale.managerName === selectedManager;
+    const matchesManager = selectedManager === 'all' || 
+      (sale.managerName === selectedManager || sale.managerName?.startsWith(selectedManager));
     return matchesDate && matchesManager;
   });
 
@@ -60,11 +73,11 @@ export default function Analytics(props: AnalyticsProps) {
     : 0;
 
   // 담당자별 매출 및 영업이익 요약 데이터 (차트용)
-  const managerCompareData = MANAGERS.map((m) => {
-    const managerSales = filteredSales.filter((s) => s.managerName === m);
+  const managerCompareData = uniqueManagerNamesInSales.map((cleanName) => {
+    const managerSales = filteredSales.filter((s) => s.managerName === cleanName || s.managerName?.startsWith(cleanName));
     return {
-      shortName: m.split(' ')[0],
-      fullName: m,
+      shortName: cleanName,
+      fullName: cleanName,
       sales: managerSales.reduce((sum, s) => sum + s.amount, 0),
       profit: managerSales.reduce((sum, s) => sum + s.profit, 0),
       fee: managerSales.reduce((sum, s) => sum + s.fee, 0),
@@ -183,7 +196,7 @@ export default function Analytics(props: AnalyticsProps) {
               className="block w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-colors"
             >
               <option value="all">전체 파트너 종합</option>
-              {MANAGERS.map((m) => (
+              {uniqueManagerNamesInSales.map((m) => (
                 <option key={m} value={m}>{m}</option>
               ))}
             </select>

@@ -33,9 +33,28 @@ export interface FirestoreErrorInfo {
   }
 }
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+export function isQuotaExceeded(): boolean {
+  return localStorage.getItem('firestore_quota_exceeded') === 'true';
+}
+
+export function setQuotaExceeded(exceeded: boolean) {
+  if (exceeded) {
+    localStorage.setItem('firestore_quota_exceeded', 'true');
+  } else {
+    localStorage.removeItem('firestore_quota_exceeded');
+  }
+  window.dispatchEvent(new Event('firestore_quota_status_changed'));
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null, shouldThrow: boolean = true) {
+  const errStr = error instanceof Error ? error.message : String(error);
+  const isQuota = (error as any)?.code === 'resource-exhausted' || errStr.includes('Quota') || errStr.includes('resource-exhausted') || errStr.includes('quota');
+  if (isQuota) {
+    setQuotaExceeded(true);
+  }
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errStr,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -51,5 +70,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     path
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  if (shouldThrow) {
+    throw new Error(JSON.stringify(errInfo));
+  }
 }

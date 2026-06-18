@@ -21,10 +21,10 @@ export const INITIAL_SETTINGS: SystemSettings = {
 };
 
 export const MANAGERS = [
-  '이지원 (수석 컨설턴트)',
-  '김민준 (책임 분석가)',
-  '박소희 (영업 팀장)',
-  '최재혁 (파트너)',
+  '이지원 (컨설턴트)',
+  '김민준 (컨설턴트)',
+  '박소희 (컨설턴트)',
+  '최재혁 (컨설턴트)',
 ];
 
 export const INITIAL_SALES: Sale[] = [];

@@ -102,6 +102,21 @@
         "salesId": { "type": "string" }
       },
       "required": ["id", "date", "managerId", "managerName", "customerName", "salesAmount", "commissionRate", "calculatedFee", "status"]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Custom credential user login account",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "password": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "영업팀", "코치"] },
+        "employeeId": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] }
+      },
+      "required": ["id", "email", "password", "name", "role", "status"]
     }
   },
   "firestore": {
@@ -128,6 +143,10 @@
     "/sales_fees/{feeId}": {
       "schema": "SalesFeeItem",
       "description": "Store sales fees"
+    },
+    "/user_accounts/{accountId}": {
+      "schema": "UserAccount",
+      "description": "Store login credentials for users"
     }
   }
 }

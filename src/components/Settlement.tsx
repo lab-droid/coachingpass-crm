@@ -27,6 +27,12 @@ import { db } from '../firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { MANAGERS } from '../data/mockData';
 
+// Excel ROUNDDOWN equivalent helper
+const roundDown = (value: number, digits: number): number => {
+  const factor = Math.pow(10, digits);
+  return Math.floor(value * factor) / factor;
+};
+
 interface SettlementProps {
   sales: Sale[];
   setSales: React.Dispatch<React.SetStateAction<Sale[]>>;
@@ -35,7 +41,7 @@ interface SettlementProps {
 export default function Settlement(props: SettlementProps) {
   // View states: 'spreadsheet' (Default) or 'partner' (Original aggregate)
   const [viewMode, setViewMode] = useState<'spreadsheet' | 'partner'>('spreadsheet');
-  const [selectedManager, setSelectedManager] = useState<string | null>(MANAGERS[0]);
+  const [selectedManager, setSelectedManager] = useState<string | null>(null);
   const [downloadingReport, setDownloadingReport] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
@@ -45,7 +51,7 @@ export default function Settlement(props: SettlementProps) {
 
   // Spreadsheet filter/search states
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'pending'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'pending' | 'hold'>('all');
   const [inquiryFilter, setInquiryFilter] = useState<'all' | 'personal' | 'corporate'>('all');
 
   useEffect(() => {
@@ -67,12 +73,29 @@ export default function Settlement(props: SettlementProps) {
 
   // Compute active sales reps and coaches pool cleanly
   const salesManagersList = useMemo(() => {
-    const activeDbSales = employees.filter(e => e.role === '영업팀' && e.status === 'active');
+    const activeDbSales = employees.filter(e => e.role === '영업팀' && e.status === 'active' && e.department !== '영업부서장');
     if (activeDbSales.length > 0) {
       return activeDbSales.map(e => e.name);
     }
     return MANAGERS.map(m => m.split(' ')[0]); // Clean name format
   }, [employees]);
+
+  const summariesManagersPool = useMemo(() => {
+    const activeDbSales = employees.filter(e => e.role === '영업팀' && e.status === 'active' && e.department !== '영업부서장');
+    if (activeDbSales.length > 0) {
+      return activeDbSales.map(e => `${e.name} (${e.department || '영업팀'})`);
+    }
+    return MANAGERS;
+  }, [employees]);
+
+  useEffect(() => {
+    if (summariesManagersPool.length > 0) {
+      setSelectedManager((prev) => {
+        if (prev && summariesManagersPool.includes(prev)) return prev;
+        return summariesManagersPool[0];
+      });
+    }
+  }, [summariesManagersPool]);
 
   const coachList = useMemo(() => {
     const activeDbCoaches = employees.filter(e => e.role === '코치' && e.status === 'active');
@@ -93,14 +116,13 @@ export default function Settlement(props: SettlementProps) {
     if (!managerName || managerName === '배정 대기') {
       return '배정 대기';
     }
-    const cleanName = managerName.split(' ')[0];
-    const isMatched = salesManagersList.includes(cleanName);
-    return isMatched ? cleanName : '없음';
+    const isMatched = salesManagersList.includes(managerName);
+    return isMatched ? managerName : '없음';
   };
 
   // 1. 담당자별 수수료 계산 집계 (실시간 동기화 데이터 적용 - 매출액 0원 제외)
   const summaries: CommissionSummary[] = useMemo(() => {
-    const pool = [...MANAGERS];
+    const pool = [...summariesManagersPool];
     const nonZeroSalesOnly = props.sales.filter(s => (s.amount || 0) !== 0);
     const hasUnmatched = nonZeroSalesOnly.some(s => getMatchingManagerName(s.managerName) === '없음');
     if (hasUnmatched && !pool.includes('없음')) {
@@ -113,7 +135,8 @@ export default function Settlement(props: SettlementProps) {
         if (managerName === '없음') {
           return dispName === '없음';
         }
-        return s.managerName === managerName || s.managerName?.startsWith(managerName.split(' ')[0]);
+        const cleanPoolName = managerName.split(' ')[0];
+        return dispName === cleanPoolName;
       });
       
       return {
@@ -126,7 +149,7 @@ export default function Settlement(props: SettlementProps) {
         salesCount: managerSales.length,
       };
     });
-  }, [props.sales, salesManagersList]);
+  }, [props.sales, salesManagersList, summariesManagersPool]);
 
   // 전체 요약 통계
   const nonZeroSales = useMemo(() => props.sales.filter(s => (s.amount || 0) !== 0), [props.sales]);
@@ -134,6 +157,7 @@ export default function Settlement(props: SettlementProps) {
   const grandTotalFee = nonZeroSales.reduce((sum, s) => sum + (s.fee || 0), 0);
   const grandPendingFee = nonZeroSales.filter((s) => s.status === 'pending').reduce((sum, s) => sum + (s.fee || 0), 0);
   const grandCompletedFee = nonZeroSales.filter((s) => s.status === 'completed').reduce((sum, s) => sum + (s.fee || 0), 0);
+  const grandHoldFee = nonZeroSales.filter((s) => s.status === 'hold').reduce((sum, s) => sum + (s.fee || 0), 0);
 
   // 선택된 대리인의 상세 거래 목록 (기존 뷰용)
   const activeManagerSales = useMemo(() => {
@@ -144,7 +168,8 @@ export default function Settlement(props: SettlementProps) {
       if (selectedManager === '없음') {
         return dispName === '없음';
       }
-      return s.managerName === selectedManager || s.managerName?.startsWith(selectedManager.split(' ')[0]);
+      const cleanSelectedName = selectedManager.split(' ')[0];
+      return dispName === cleanSelectedName;
     });
   }, [selectedManager, props.sales, salesManagersList]);
 
@@ -184,8 +209,12 @@ export default function Settlement(props: SettlementProps) {
           const amt = Number(value) || 0;
           const inquiryType = sale.inquiryType || 'corporate'; // Default corporate per user rules
           const rate = inquiryType === 'corporate' ? 10 : 20;
-          const baseAmount = amt / 1.1;
-          const computedFee = Math.round(baseAmount * (rate / 100));
+          const vat = Math.round(amt * 0.1);
+          const supplyPrice = amt - vat;
+          const commission = Math.round(supplyPrice * (rate / 100));
+          const businessTax = roundDown(commission * 0.03, -1);
+          const residentTax = roundDown(commission * 0.003, -1);
+          const computedFee = commission - businessTax - residentTax;
           updatedSale.fee = computedFee;
           updatedSale.profit = amt - computedFee;
           updatedSale.amount = amt;
@@ -195,11 +224,16 @@ export default function Settlement(props: SettlementProps) {
         if (fieldName === 'inquiryType') {
           const type = value as 'personal' | 'corporate';
           const rate = type === 'corporate' ? 10 : 20;
-          const baseAmount = (sale.amount || 0) / 1.1;
-          const computedFee = Math.round(baseAmount * (rate / 100));
+          const amt = sale.amount || 0;
+          const vat = Math.round(amt * 0.1);
+          const supplyPrice = amt - vat;
+          const commission = Math.round(supplyPrice * (rate / 100));
+          const businessTax = roundDown(commission * 0.03, -1);
+          const residentTax = roundDown(commission * 0.003, -1);
+          const computedFee = commission - businessTax - residentTax;
           updatedSale.fee = computedFee;
           updatedSale.feeRate = rate;
-          updatedSale.profit = (sale.amount || 0) - computedFee;
+          updatedSale.profit = amt - computedFee;
           updatedSale.inquiryType = type;
         }
         
@@ -210,12 +244,16 @@ export default function Settlement(props: SettlementProps) {
     props.setSales(updatedSales);
   };
 
-  // Individual payout status toggler
-  const handleToggleStatus = (id: string) => {
+  // Individual payout status updater
+  const handleUpdateStatus = (id: string, nextStatus: 'pending' | 'completed' | 'hold') => {
     const updatedSales = props.sales.map((sale) => {
       if (sale.id === id) {
-        const nextStatus = sale.status === 'pending' ? 'completed' : 'pending';
-        return { ...sale, status: nextStatus };
+        let holdReason = sale.holdReason || '';
+        if (nextStatus === 'hold' && !holdReason) {
+          const reason = prompt('정산 보류 사유를 입력해 주세요:') || '';
+          holdReason = reason;
+        }
+        return { ...sale, status: nextStatus, holdReason };
       }
       return sale;
     });
@@ -223,16 +261,30 @@ export default function Settlement(props: SettlementProps) {
     showToast('정산 상태가 즉시 변경 및 동기화 처리되었습니다.');
   };
 
+  // Individual payout status toggler
+  const handleToggleStatus = (id: string) => {
+    const sale = props.sales.find(s => s.id === id);
+    if (!sale) return;
+    let nextStatus: 'pending' | 'completed' | 'hold' = 'pending';
+    if (sale.status === 'pending') nextStatus = 'completed';
+    else if (sale.status === 'completed') nextStatus = 'hold';
+    else if (sale.status === 'hold') nextStatus = 'pending';
+    
+    handleUpdateStatus(id, nextStatus);
+  };
+
   // Select manager bulk complete
   const handleBulkComplete = (managerName: string) => {
+    const cleanTargetName = managerName.split(' ')[0];
     const updatedSales = props.sales.map((sale) => {
-      if ((sale.managerName === managerName || sale.managerName?.startsWith(managerName.split(' ')[0])) && sale.status === 'pending') {
-        return { ...sale, status: 'completed' };
+      const dispName = getMatchingManagerName(sale.managerName);
+      if (dispName === cleanTargetName && sale.status === 'pending') {
+        return { ...sale, status: 'completed' as const };
       }
       return sale;
     });
     props.setSales(updatedSales);
-    showToast(`${managerName.split(' ')[0]} 파트너의 모든 대기 수수료가 일괄 정산 완료되었습니다.`);
+    showToast(`${cleanTargetName} 파트너의 모든 대기 수수료가 일괄 정산 완료되었습니다.`);
   };
 
   // spreadsheet action: add new spreadsheet row
@@ -272,7 +324,7 @@ export default function Settlement(props: SettlementProps) {
   // spreadsheet action: CSV Spreadsheet Download
   const handleExportCsv = () => {
     const headers = [
-      '문의일',
+      '결제일',
       '수강생 이름',
       'DB유입',
       '영업담당',
@@ -411,7 +463,7 @@ export default function Settlement(props: SettlementProps) {
             </span>
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            문의일, 수강생 이름, DB유입, 영업담당, 담당코치, 등록서비스, 매출, 코칭시간, 등록일 카테고리로 수수료 정산을 입체적으로 관리합니다.
+            결제일, 수강생 이름, DB유입, 영업담당, 담당코치, 등록서비스, 매출, 코칭시간, 등록일 카테고리로 수수료 정산을 입체적으로 관리합니다.
           </p>
         </div>
 
@@ -443,7 +495,7 @@ export default function Settlement(props: SettlementProps) {
       </div>
 
       {/* Aggregate Commission Stat Boxes */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6" id="settlement_kpis">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4" id="settlement_kpis">
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex items-center space-x-4">
           <div className="h-10 w-10 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center shrink-0">
             <Clock className="h-5 w-5" />
@@ -463,6 +515,17 @@ export default function Settlement(props: SettlementProps) {
             <span className="text-[11px] font-semibold text-slate-400 block uppercase tracking-wider">지급 완료 수수료 (Paid)</span>
             <strong className="text-lg font-bold font-mono text-emerald-600 block mt-0.5">{formatKrw(grandCompletedFee)}</strong>
             <span className="text-[10px] text-slate-400 block mt-0.5">송금 및 회계 승인 전액</span>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex items-center space-x-4">
+          <div className="h-10 w-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+            <AlertCircle className="h-5 w-5" />
+          </div>
+          <div>
+            <span className="text-[11px] font-semibold text-slate-400 block uppercase tracking-wider">정산 보류 수수료 (Hold)</span>
+            <strong className="text-lg font-bold font-mono text-rose-600 block mt-0.5">{formatKrw(grandHoldFee)}</strong>
+            <span className="text-[10px] text-slate-400 block mt-0.5">보류 사유가 기입된 미지급금</span>
           </div>
         </div>
 
@@ -529,6 +592,7 @@ export default function Settlement(props: SettlementProps) {
                     <option value="all" className="bg-slate-800">전체보기</option>
                     <option value="pending" className="bg-slate-800 text-amber-400">정산대기</option>
                     <option value="completed" className="bg-slate-800 text-emerald-400">정산완료</option>
+                    <option value="hold" className="bg-slate-800 text-rose-450 font-bold">정산보류</option>
                   </select>
                 </div>
 
@@ -576,7 +640,7 @@ export default function Settlement(props: SettlementProps) {
                     {/* Visual Sheets Coordinate alphabet (A-K) row */}
                     <tr className="bg-slate-50 border-b border-slate-200/80 font-mono text-[9px] text-slate-400 font-bold tracking-widest text-center select-none">
                       <th className="w-10 border-r border-slate-200 p-1">#</th>
-                      <th className="w-28 border-r border-slate-200 p-1">A (문의일)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">A (결제일)</th>
                       <th className="w-28 border-r border-slate-200 p-1">B (수강생 이름)</th>
                       <th className="w-32 border-r border-slate-200 p-1">C (DB유입)</th>
                       <th className="w-28 border-r border-slate-200 p-1">D (영업담당)</th>
@@ -592,7 +656,7 @@ export default function Settlement(props: SettlementProps) {
                     {/* Natural Row headers with descriptive details */}
                     <tr className="bg-slate-100/80 border-b border-slate-200/80 text-[10px] text-slate-650 font-bold text-center">
                       <td className="p-2 border-r border-slate-200 font-mono">Row</td>
-                      <td className="p-2 border-r border-slate-400">문의 접수일</td>
+                      <td className="p-2 border-r border-slate-400">결제일</td>
                       <td className="p-2 border-r border-slate-400">수생 성명</td>
                       <td className="p-2 border-r border-slate-400">DB 인입 형태</td>
                       <td className="p-2 border-r border-slate-400">계약 영업담당</td>
@@ -621,7 +685,11 @@ export default function Settlement(props: SettlementProps) {
                           <tr 
                             key={sale.id}
                             className={`border-b border-slate-200 font-sans hover:bg-slate-50/60 transition-all ${
-                              sale.status === 'completed' ? 'bg-emerald-50/15' : 'bg-amber-50/15'
+                              sale.status === 'completed' 
+                                ? 'bg-emerald-50/15'
+                                : sale.status === 'hold'
+                                ? 'bg-rose-50/15'
+                                : 'bg-amber-50/15'
                             }`}
                           >
                             {/* Row Indicator */}
@@ -629,7 +697,7 @@ export default function Settlement(props: SettlementProps) {
                               {rowNum}
                             </td>
 
-                            {/* Column A: 문의일 (Inquiry Date) */}
+                            {/* Column A: 결제일 (Payment Date) */}
                             <td className="border-r border-slate-200 p-1 text-center font-mono">
                               <input 
                                 type="date"
@@ -753,19 +821,35 @@ export default function Settlement(props: SettlementProps) {
                               {formatKrw(displayFee)}
                             </td>
 
-                            {/* Column K: 정산 전산 상태 toggle */}
-                            <td className="border-r border-slate-200 p-1 text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleToggleStatus(sale.id)}
-                                className={`w-full py-1 text-[10px] font-black rounded-lg border cursor-pointer transition-all ${
+                            {/* Column K: 정산 전산 상태 selection */}
+                            <td className="border-r border-slate-200 p-1 text-center min-w-[130px]">
+                              <select
+                                value={sale.status || 'pending'}
+                                onChange={(e) => handleUpdateStatus(sale.id, e.target.value as 'pending' | 'completed' | 'hold')}
+                                className={`w-full py-1 text-[10px] font-black rounded-lg border cursor-pointer bg-white transition-all text-center focus:outline-none focus:ring-1 ${
                                   sale.status === 'completed'
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                                    ? 'text-emerald-700 border-emerald-250 bg-emerald-50/50 hover:bg-emerald-100 focus:ring-emerald-500'
+                                    : sale.status === 'hold'
+                                    ? 'text-rose-700 border-rose-250 bg-rose-50/50 hover:bg-rose-100 focus:ring-rose-500 font-extrabold'
+                                    : 'text-amber-700 border-amber-250 bg-amber-50/50 hover:bg-amber-100 focus:ring-amber-500'
                                 }`}
                               >
-                                {sale.status === 'completed' ? '🟢 정산 완료 (완료)' : '🟡 지급 대기 (대기)'}
-                              </button>
+                                <option value="pending">🟡 지급 대기</option>
+                                <option value="completed">🟢 정산 완료</option>
+                                <option value="hold">🔴 정산 보류</option>
+                              </select>
+                              {sale.status === 'hold' && (
+                                <div className="mt-1 flex items-center space-x-1 px-1">
+                                  <input
+                                    type="text"
+                                    placeholder="보류 사유 입력"
+                                    value={sale.holdReason || ''}
+                                    onChange={(e) => updateSaleField(sale.id, 'holdReason', e.target.value)}
+                                    className="w-full text-[9px] p-1 border border-zinc-200 rounded bg-white text-rose-800 placeholder-slate-350 focus:outline-none focus:ring-1 focus:ring-zinc-400 font-medium"
+                                    title="정산 보류 사유"
+                                  />
+                                </div>
+                              )}
                             </td>
 
                             {/* Row Action: delete row */}
@@ -973,28 +1057,34 @@ export default function Settlement(props: SettlementProps) {
                               <strong className="text-slate-900 font-mono font-bold text-sm block">{formatKrw(sale.fee)}</strong>
                             </div>
 
-                            <button
-                              onClick={() => handleToggleStatus(sale.id)}
-                              className={`
-                                px-3 py-1.5 rounded-lg border font-bold duration-100 flex items-center space-x-1 cursor-pointer
-                                ${sale.status === 'completed'
-                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100 text-xs'
-                                  : 'bg-amber-50 text-amber-700 border-amber-100 hover:bg-amber-100 text-xs'
-                                }
-                              `}
-                            >
-                              {sale.status === 'completed' ? (
-                                <>
-                                  <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                                  <span>회계 정산 완료</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Clock className="w-3.5 h-3.5 text-amber-500" />
-                                  <span>미정산 (대기)</span>
-                                </>
+                            <div className="flex flex-col items-end space-y-1">
+                              <select
+                                value={sale.status || 'pending'}
+                                onChange={(e) => handleUpdateStatus(sale.id, e.target.value as 'pending' | 'completed' | 'hold')}
+                                className={`px-2.5 py-1.5 rounded-lg border font-bold duration-100 cursor-pointer text-xs bg-white text-center focus:outline-none ${
+                                  sale.status === 'completed'
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 font-black'
+                                    : sale.status === 'hold'
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100 font-extrabold'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 font-bold'
+                                }`}
+                              >
+                                <option value="pending">🟡 미정산 (대기)</option>
+                                <option value="completed">🟢 회계 정산 완료</option>
+                                <option value="hold">🔴 정산 보류</option>
+                              </select>
+                              {sale.status === 'hold' && (
+                                <div className="mt-1 w-full max-w-[200px] px-1">
+                                  <input
+                                    type="text"
+                                    placeholder="정산 보류 사유 입력"
+                                    value={sale.holdReason || ''}
+                                    onChange={(e) => updateSaleField(sale.id, 'holdReason', e.target.value)}
+                                    className="w-full text-[10px] p-1 border border-rose-200 bg-rose-50/35 text-rose-800 rounded focus:outline-none focus:ring-1 focus:ring-rose-400"
+                                  />
+                                </div>
                               )}
-                            </button>
+                            </div>
                           </div>
                         </div>
                       ))

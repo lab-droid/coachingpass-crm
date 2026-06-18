@@ -15,15 +15,22 @@ import {
   RefreshCw,
   DownloadCloud
 } from 'lucide-react';
-import { Sale, SystemSettings } from '../types';
+import { Sale, SystemSettings, User } from '../types';
 import { db } from '../firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { STATIC_SALES_MANAGERS } from './SalesFees';
+
+// Excel ROUNDDOWN equivalent helper
+const roundDown = (value: number, digits: number): number => {
+  const factor = Math.pow(10, digits);
+  return Math.floor(value * factor) / factor;
+};
 
 interface SalesManagementProps {
   sales: Sale[];
   setSales: React.Dispatch<React.SetStateAction<Sale[]>>;
   settings: SystemSettings;
+  user: User;
 }
 
 export default function SalesManagement(props: SalesManagementProps) {
@@ -54,7 +61,7 @@ export default function SalesManagement(props: SalesManagementProps) {
 
   // Compute active sales managers pool dynamically (role === '영업팀')
   const salesManagers = React.useMemo(() => {
-    const activeDbSales = employees.filter(e => e.role === '영업팀' && e.status === 'active');
+    const activeDbSales = employees.filter(e => e.role === '영업팀' && e.status === 'active' && e.department !== '영업부서장');
     if (activeDbSales.length > 0) {
       return activeDbSales.map(e => e.name);
     }
@@ -66,14 +73,19 @@ export default function SalesManagement(props: SalesManagementProps) {
     props.setSales(prev => prev.map(s => {
       if (s.id === saleId) {
         const rate = nextType === 'corporate' ? 10 : 20;
-        const baseAmount = (s.amount || 0) / 1.1;
-        const computedFee = Math.round(baseAmount * (rate / 100));
+        const amt = s.amount || 0;
+        const vat = Math.round(amt * 0.1);
+        const supplyPrice = amt - vat;
+        const commission = Math.round(supplyPrice * (rate / 100));
+        const businessTax = roundDown(commission * 0.03, -1);
+        const residentTax = roundDown(commission * 0.003, -1);
+        const computedFee = commission - businessTax - residentTax;
         return {
           ...s,
           inquiryType: nextType,
           feeRate: rate,
           fee: computedFee,
-          profit: (s.amount || 0) - computedFee
+          profit: amt - computedFee
         };
       }
       return s;
@@ -86,14 +98,20 @@ export default function SalesManagement(props: SalesManagementProps) {
       if (s.id === saleId) {
         const inquiryType = s.inquiryType || 'corporate';
         const rate = inquiryType === 'corporate' ? 10 : 20;
-        const baseAmount = (s.amount || 0) / 1.1;
-        const computedFee = Math.round(baseAmount * (rate / 100));
+        const amt = s.amount || 0;
+        const vat = Math.round(amt * 0.1);
+        const supplyPrice = amt - vat;
+        const commission = Math.round(supplyPrice * (rate / 100));
+        const businessTax = roundDown(commission * 0.03, -1);
+        const residentTax = roundDown(commission * 0.003, -1);
+        const computedFee = commission - businessTax - residentTax;
         return {
           ...s,
           managerName: trimmedName,
+          isManagerManuallyEdited: true,
           feeRate: rate,
           fee: computedFee,
-          profit: (s.amount || 0) - computedFee
+          profit: amt - computedFee
         };
       }
       return s;
@@ -137,6 +155,16 @@ export default function SalesManagement(props: SalesManagementProps) {
   // 정렬 및 필터 가공
   const filteredSales = props.sales
     .filter((sale) => {
+      // Role segregation: Sales reps and coaches only see their assigned records
+      if (props.user && props.user.role !== 'admin' && props.user.role !== 'manager') {
+        if (props.user.role === '영업팀' && sale.managerName !== props.user.name) {
+          return false;
+        }
+        if (props.user.role === '코치' && sale.coachName !== props.user.name) {
+          return false;
+        }
+      }
+
       const matchesSearch = 
         sale.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
         sale.id.toLowerCase().includes(searchTerm.toLowerCase());
@@ -186,25 +214,12 @@ export default function SalesManagement(props: SalesManagementProps) {
       
       while (keepFetching && offset < 50) { // Limit absolute max loops
         const res = await fetch(`/api/imweb/orders?limit=100&offset=${offset}`);
-        const data = await res.json().catch(() => null);
-
-        // 주의: 아임웹 v2 API는 인증 실패 등 오류 상황에서도 HTTP 200을 반환하고
-        // 본문에 {"msg":"...Error","code":-5} 형태로 결과를 담는다. 검증된 성공 신호는
-        // data.data.list 배열의 존재이므로, 이를 기준으로 성공/실패를 판별한다.
-        const list = Array.isArray(data?.data?.list) ? data.data.list : null;
-
-        if (!list) {
-          // list가 없으면 오류이거나(인증/권한 등) 응답 이상 → 실제 메시지를 노출
-          const reason = data?.error || data?.msg || `HTTP ${res.status}`;
-          setSyncMessage({ type: 'error', text: `아임웹 연동 실패: ${reason}` });
-          setTimeout(() => setSyncMessage(null), 8000);
-          setIsSyncingImweb(false);
-          return;
-        }
-
-        if (list.length > 0) {
+        const data = await res.json();
+        
+        if (res.ok && data.data && data.data.list && data.data.list.length > 0) {
+          const list = data.data.list;
           allOrders.push(...list);
-
+          
           // Check if the oldest order in this batch is before target date
           if (list[list.length - 1].order_time < TARGET_TIMESTAMP || list.length < 100) {
             keepFetching = false;
@@ -359,19 +374,31 @@ export default function SalesManagement(props: SalesManagementProps) {
               }
             };
             
+            // If the manager was manually edited, keep the existing one and do not overwrite it.
+            let finalManagerName = managerName || '배정 대기';
+            let isManagerManuallyEdited = existing?.isManagerManuallyEdited || false;
+
+            if (existing) {
+              if (existing.isManagerManuallyEdited || (existing.managerName && existing.managerName !== '배정 대기' && existing.managerName !== managerName)) {
+                finalManagerName = existing.managerName;
+                isManagerManuallyEdited = true;
+              }
+            }
+
             const saleData = {
               id: order.order_no,
               date: dateStr,
               customerName: customerName,
-              managerName: managerName || '배정 대기',
+              managerName: finalManagerName,
               amount,
               feeRate,
               fee,
               profit,
-              status: ((paymentData.payment_time || paymentData.pay_time || order.pay?.status === 'PAY_COMPLETE') ? 'completed' : 'pending') as 'pending' | 'completed',
+              status: 'pending' as 'pending',
               notes: '아임웹 연동 데이터',
               imwebData,
-              inquiryType
+              inquiryType,
+              isManagerManuallyEdited
             };
             
             if (existingIndex >= 0) {
@@ -677,6 +704,7 @@ export default function SalesManagement(props: SalesManagementProps) {
                               {salesManagers.map(name => (
                                 <option key={name} value={name}>{name}</option>
                               ))}
+                              <option value="없음">없음</option>
                             </select>
                             <button
                               onClick={() => handleSaveManagerName(sale.id, tempManagerName)}
@@ -697,14 +725,23 @@ export default function SalesManagement(props: SalesManagementProps) {
                           <div 
                             onClick={(e) => {
                               e.stopPropagation();
+                              if (props.user && props.user.role !== 'admin' && props.user.role !== 'manager') {
+                                return; // Disabled for non-admin
+                              }
                               setEditingSaleId(sale.id);
                               setTempManagerName(finalManager);
                             }}
-                            className="group inline-flex items-center space-x-1 px-2.5 py-1 bg-slate-100/80 hover:bg-white text-slate-600 hover:text-slate-900 text-[13px] font-medium rounded-full border border-slate-200 cursor-pointer transition-all duration-75"
-                            title="클릭하여 담당자 이름 수정"
+                            className={`group inline-flex items-center space-x-1 px-2.5 py-1 ${
+                              (props.user && props.user.role !== 'admin' && props.user.role !== 'manager')
+                                ? 'bg-slate-50 text-slate-500 border-slate-200/50 cursor-default'
+                                : 'bg-slate-100/80 hover:bg-white text-slate-600 hover:text-slate-900 border border-slate-200 cursor-pointer'
+                            } text-[13px] font-medium rounded-full transition-all duration-75 border`}
+                            title={(props.user && props.user.role !== 'admin' && props.user.role !== 'manager') ? undefined : "클릭하여 담당자 이름 수정"}
                           >
                             <span>{finalManager}</span>
-                            <span className="opacity-0 group-hover:opacity-100 text-slate-400 text-[10px] ml-1 duration-100 transition-opacity">✎</span>
+                            {!(props.user && props.user.role !== 'admin' && props.user.role !== 'manager') && (
+                              <span className="opacity-0 group-hover:opacity-100 text-slate-400 text-[10px] ml-1 duration-100 transition-opacity">✎</span>
+                            )}
                           </div>
                         )}
                       </td>

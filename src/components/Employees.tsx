@@ -25,7 +25,7 @@ import {
   Target
 } from 'lucide-react';
 import { Employee, User } from '../types';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { db, handleFirestoreError, OperationType, isQuotaExceeded } from '../firebase';
 import { collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
 
 // Initial internal mock staff in case empty
@@ -60,7 +60,7 @@ const RAW_DEFAULT_EMPLOYEES: Employee[] = [
     email: 'gm.oh@coachingpass.com',
     phone: '010-5000-0003',
     role: '영업팀',
-    department: '영업부서장',
+    department: '컨설턴트',
     joinedDate: '2024-02-10',
     status: 'active',
     baseSalary: 4500000,
@@ -72,7 +72,7 @@ const RAW_DEFAULT_EMPLOYEES: Employee[] = [
     email: 'hr.seo@coachingpass.com',
     phone: '010-5000-0004',
     role: '영업팀',
-    department: '영업팀장',
+    department: '컨설턴트',
     joinedDate: '2024-03-01',
     status: 'active',
     baseSalary: 4200000,
@@ -120,7 +120,7 @@ const RAW_DEFAULT_EMPLOYEES: Employee[] = [
     email: 'uj.kim@coachingpass.com',
     phone: '010-5000-0008',
     role: '영업팀',
-    department: '영업팀장',
+    department: '컨설턴트',
     joinedDate: '2024-04-10',
     status: 'active',
     baseSalary: 4200000,
@@ -132,7 +132,7 @@ const RAW_DEFAULT_EMPLOYEES: Employee[] = [
     email: 'gh.lee@coachingpass.com',
     phone: '010-5000-0009',
     role: '영업팀',
-    department: '영업팀장',
+    department: '컨설턴트',
     joinedDate: '2024-04-15',
     status: 'active',
     baseSalary: 4200000,
@@ -562,9 +562,12 @@ const RAW_DEFAULT_EMPLOYEES: Employee[] = [
 
 const DEFAULT_EMPLOYEES: Employee[] = RAW_DEFAULT_EMPLOYEES.map(emp => {
   if (emp.role === '영업팀') {
+    let rate = 10;
+    if (emp.id === 'emp_003') rate = 15; // 오근목
+    else if (['emp_004', 'emp_008', 'emp_009'].includes(emp.id)) rate = 12; // 서헤림, 김의진, 이공희
     return {
       ...emp,
-      commissionRate: emp.department.includes('부서장') ? 15 : emp.department.includes('팀장') ? 12 : 10
+      commissionRate: rate
     };
   } else if (emp.role === '코치') {
     return {
@@ -578,6 +581,8 @@ const DEFAULT_EMPLOYEES: Employee[] = RAW_DEFAULT_EMPLOYEES.map(emp => {
 interface EmployeesProps {
   user?: User;
 }
+
+let employeesSeedAttempted = false;
 
 export default function Employees({ user }: EmployeesProps) {
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -596,40 +601,57 @@ export default function Employees({ user }: EmployeesProps) {
 
   // Load and sync employees from Firestore
   useEffect(() => {
+    const cached = localStorage.getItem('cached_employees');
+    if (cached) {
+      try {
+        setEmployees(JSON.parse(cached));
+      } catch (e) {
+        // ignore
+      }
+    }
+
     const unsubscribe = onSnapshot(collection(db, 'employees'), (snapshot) => {
       const dbEmployees = snapshot.docs.map(doc => doc.data() as Employee);
       const hasOldMock = dbEmployees.some(emp => emp.id === 'emp_001' && emp.name === '김상현');
       const hasStaleSeed = dbEmployees.some(emp => 
         (emp.role === '영업팀' && emp.commissionRate === undefined) ||
-        (emp.role === '코치' && emp.coachingFee === undefined)
+        (emp.role === '코치' && emp.coachingFee === undefined) ||
+        (emp.role === '영업팀' && emp.department !== '컨설턴트')
       );
       
       if (dbEmployees.length === 0 || hasOldMock || hasStaleSeed) {
         // Fallback, old mock, or stale schema detected: upgrade via merge set
-        if (hasOldMock) {
-          dbEmployees.forEach(async (emp) => {
+        if (!employeesSeedAttempted && !isQuotaExceeded()) {
+          employeesSeedAttempted = true;
+          if (hasOldMock) {
+            dbEmployees.forEach(async (emp) => {
+              try {
+                await deleteDoc(doc(db, 'employees', emp.id));
+              } catch (e) {
+                console.error("error deleting stale entry:", e);
+              }
+            });
+          }
+          DEFAULT_EMPLOYEES.forEach(async (emp) => {
             try {
-              await deleteDoc(doc(db, 'employees', emp.id));
+              await setDoc(doc(db, 'employees', emp.id), emp, { merge: true });
             } catch (e) {
-              console.error("error deleting stale entry:", e);
+              console.error("error seeding/migrating employee doc:", e);
             }
           });
         }
-        DEFAULT_EMPLOYEES.forEach(async (emp) => {
-          try {
-            await setDoc(doc(db, 'employees', emp.id), emp, { merge: true });
-          } catch (e) {
-            console.error("error seeding/migrating employee doc:", e);
-          }
-        });
         setEmployees(DEFAULT_EMPLOYEES);
+        localStorage.setItem('cached_employees', JSON.stringify(DEFAULT_EMPLOYEES));
       } else {
         setEmployees(dbEmployees);
+        localStorage.setItem('cached_employees', JSON.stringify(dbEmployees));
       }
     }, (error) => {
       console.error("Firestore employees load error, using fallback state:", error);
-      setEmployees(DEFAULT_EMPLOYEES);
-      handleFirestoreError(error, OperationType.GET, 'employees');
+      if (!cached) {
+        setEmployees(DEFAULT_EMPLOYEES);
+      }
+      handleFirestoreError(error, OperationType.GET, 'employees', false);
     });
 
     return () => unsubscribe();
@@ -703,6 +725,22 @@ export default function Employees({ user }: EmployeesProps) {
         coachingFee: currentEmployee.role === '코치' ? (Number(currentEmployee.coachingFee) || 0) : undefined
       };
 
+      if (isQuotaExceeded()) {
+        setEmployees(prev => {
+          const next = isEditing 
+            ? prev.map(emp => emp.id === employeeId ? savedEmployee : emp)
+            : [...prev, savedEmployee];
+          localStorage.setItem('cached_employees', JSON.stringify(next));
+          return next;
+        });
+        setIsModalOpen(false);
+        showToast(isEditing 
+          ? `${savedEmployee.name} 임직원 정보가 수정되었습니다 (로컬 저장).` 
+          : `신규 임직원 ${savedEmployee.name}님이 등록되었습니다 (로컬 저장).`
+        );
+        return;
+      }
+
       await setDoc(doc(db, 'employees', employeeId), savedEmployee);
       setIsModalOpen(false);
       
@@ -725,6 +763,16 @@ export default function Employees({ user }: EmployeesProps) {
   const handleDeleteClick = async (employeeId: string, name: string) => {
     if (confirm(`${name} 님의 인적 데이터를 완전히 삭제하시겠습니까?`)) {
       try {
+        if (isQuotaExceeded()) {
+          setEmployees(prev => {
+            const next = prev.filter(emp => emp.id !== employeeId);
+            localStorage.setItem('cached_employees', JSON.stringify(next));
+            return next;
+          });
+          showToast(`${name} 임직원의 인사 정보가 완전히 말소되었습니다 (로컬 저장).`);
+          return;
+        }
+
         await deleteDoc(doc(db, 'employees', employeeId));
         showToast(`${name} 임직원의 인사 정보가 완전히 말소되었습니다.`);
       } catch (error) {
