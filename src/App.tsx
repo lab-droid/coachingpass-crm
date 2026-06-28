@@ -8,13 +8,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  INITIAL_SETTINGS, 
-  INITIAL_SALES 
+import {
+  INITIAL_SETTINGS,
+  INITIAL_SALES
 } from './data/mockData';
 import { Sale, SystemSettings, User } from './types';
+import { syncImwebOrders } from './services/imwebSync';
 import { auth, db, isQuotaExceeded, setQuotaExceeded } from './firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { collection, onSnapshot, query, setDoc, doc, deleteDoc, getDocs, writeBatch } from 'firebase/firestore';
@@ -79,6 +80,12 @@ function isSaleEqual(a: Sale, b: Sale): boolean {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [sales, setSales] = useState<Sale[]>([]);
+  // 자동 동기화가 항상 최신 매출 배열을 기준으로 병합하도록 ref로 추적한다.
+  const salesRef = useRef<Sale[]>([]);
+  useEffect(() => { salesRef.current = sales; }, [sales]);
+  // Firestore 초기 로드가 끝나기 전에 자동 동기화가 빈 배열을 기준으로 병합해
+  // 기존 수기 편집(담당자/문의유형/정산상태)을 덮어쓰지 않도록 로드 완료 플래그로 가드한다.
+  const [salesLoaded, setSalesLoaded] = useState(false);
   const [settings, setSettings] = useState<SystemSettings>(INITIAL_SETTINGS);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isAppLoading, setIsAppLoading] = useState(true);
@@ -102,6 +109,7 @@ export default function App() {
     const q = query(collection(db, 'sales'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const salesData = snapshot.docs.map(doc => doc.data() as Sale);
+      setSalesLoaded(true);
       if (salesData.length > 0) {
         setSales(salesData);
         localStorage.setItem('cached_sales', JSON.stringify(salesData));
@@ -120,6 +128,7 @@ export default function App() {
       }
     }, (error: any) => {
       console.error("Firestore sales subscription error:", error);
+      setSalesLoaded(true);
       const isQuota = error?.code === 'resource-exhausted' || error?.message?.includes('Quota') || error?.message?.includes('resource-exhausted');
       if (isQuota) {
         setIsFirestoreQuotaExceeded(true);
@@ -326,6 +335,50 @@ export default function App() {
       return newSales;
     });
   };
+
+  // 전역 아임웹 자동 동기화.
+  // 동기화 로직을 영업관리 화면이 아닌 App 레벨에 두어, 사용자가 어느 탭(특히 종합
+  // 대시보드)에 있든 로그인 직후 1회 + 일정 주기로 항상 최신 아임웹 주문이 Firestore에
+  // 반영되도록 한다. 이를 통해 대시보드가 예시가 아닌 실제 입력 데이터를 보여준다.
+  useEffect(() => {
+    if (!user) return;
+    if (!salesLoaded) return; // Firestore 초기 로드 완료 후에만 동기화 시작
+
+    let isMounted = true;
+    let inFlight = false;
+
+    const runAutoSync = async () => {
+      if (inFlight) return; // 중복 실행 방지 (이전 동기화가 끝나기 전 재진입 차단)
+      inFlight = true;
+      try {
+        const result = await syncImwebOrders(salesRef.current);
+        if (!isMounted) return;
+        if (result.error) {
+          console.warn('아임웹 자동 동기화 실패:', result.error);
+          return;
+        }
+        if (result.syncedCount > 0) {
+          handleSetSales(result.sales);
+          console.log(`아임웹 자동 동기화: ${result.syncedCount}건 반영 완료.`);
+        }
+      } catch (err) {
+        console.error('아임웹 자동 동기화 오류:', err);
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    // 로그인 직후 1회 즉시 동기화
+    runAutoSync();
+    // 이후 5분 주기 폴링 (아임웹 v2 API 속도 제한 회피를 위해 주기를 넉넉히 둠)
+    const interval = setInterval(runAutoSync, 300000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, salesLoaded]);
 
   const renderContent = () => {
     // Role matching filter for secure workspace segregation
