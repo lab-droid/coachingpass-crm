@@ -1,0 +1,9 @@
+{
+  // Cloudflare Pages 설정. `name`이 Pages 프로젝트명이며,
+  // 대시보드에서 만든(혹은 wrangler로 만든) 프로젝트명과 반드시 일치해야 한다.
+  "name": "coachingpass-crm",
+  // vite build 결과물 디렉터리 (Pages가 정적 자산으로 서빙)
+  "pages_build_output_dir": "./dist",
+  // Workers 런타임 버전 (functions/ 의 API 프록시가 이 런타임에서 실행)
+  "compatibility_date": "2026-06-28"
+}
