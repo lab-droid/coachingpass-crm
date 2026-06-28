@@ -1,9 +1,22 @@
 {
-  // Cloudflare Pages 설정. `name`이 Pages 프로젝트명이며,
-  // 대시보드에서 만든(혹은 wrangler로 만든) 프로젝트명과 반드시 일치해야 한다.
+  // Cloudflare Workers(+정적 자산) 설정.
+  // 이 프로젝트는 `npx wrangler deploy`로 배포되는 Workers 프로젝트다.
+  // `name`은 배포 대상 Worker(프로젝트)명이며 Cloudflare의 프로젝트명과 일치해야 한다.
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "coachingpass-crm",
-  // vite build 결과물 디렉터리 (Pages가 정적 자산으로 서빙)
-  "pages_build_output_dir": "./dist",
-  // Workers 런타임 버전 (functions/ 의 API 프록시가 이 런타임에서 실행)
-  "compatibility_date": "2026-06-28"
+  "main": "worker.ts",
+  "compatibility_date": "2026-06-28",
+
+  // `wrangler deploy` 실행 전에 프런트엔드를 빌드해 dist/ 를 생성한다.
+  "build": {
+    "command": "npx vite build"
+  },
+
+  // 빌드된 정적 자산(SPA) 서빙 + /api/* 만 Worker로 라우팅
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  }
 }

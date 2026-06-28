@@ -2,30 +2,20 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  *
- * Cloudflare Pages Function — 아임웹 API 프록시.
+ * Cloudflare Worker 엔트리 (Workers + 정적 자산 모델).
  *
- * Cloudflare Pages는 정적 호스팅이라 기존 Express 서버(server.cjs)를 실행하지 않는다.
- * 따라서 /api/imweb/* 요청을 처리할 프록시를 Pages Function으로 제공한다.
- * 이 catch-all 파일은 다음 경로를 모두 처리한다:
- *   - GET /api/imweb/token
- *   - GET /api/imweb/orders?...                (주문 목록)
- *   - GET /api/imweb/orders/:order_no          (주문 상세)
- *   - GET /api/imweb/orders/:order_no/prod-orders
- *   - GET /api/imweb/prod-orders?order_no[]=.. (상품주문 일괄)
+ * - 정적 프런트엔드(빌드된 dist/)는 ASSETS 바인딩이 서빙한다.
+ * - /api/imweb/* 요청만 이 Worker가 처리하여 아임웹 API를 프록시한다.
+ *   (wrangler.jsonc 의 assets.run_worker_first: ["/api/*"] 설정으로 라우팅)
  *
  * 환경변수(시크릿): IMWEB_API_KEY, IMWEB_SECRET
- *   설정: npx wrangler pages secret put IMWEB_API_KEY --project-name <프로젝트명>
+ *   설정: npx wrangler secret put IMWEB_API_KEY
  */
 
 interface Env {
   IMWEB_API_KEY?: string;
   IMWEB_SECRET?: string;
-}
-
-interface Ctx {
-  request: Request;
-  env: Env;
-  params: { path?: string[] | string };
+  ASSETS: { fetch: (request: Request) => Promise<Response> };
 }
 
 const IMWEB_BASE = "https://api.imweb.me/v2";
@@ -99,40 +89,54 @@ async function proxyGet(env: Env, imwebPath: string): Promise<Response> {
   }
 }
 
-export const onRequestGet = async (context: Ctx): Promise<Response> => {
-  const { request, env, params } = context;
-  const raw = params.path;
-  const segments = Array.isArray(raw) ? raw : raw ? [raw] : [];
+async function handleImweb(request: Request, env: Env, segments: string[]): Promise<Response> {
   const search = new URL(request.url).search; // 쿼리스트링 원형 보존 (order_no[] 등)
 
-  try {
-    // /api/imweb/token
-    if (segments[0] === "token" && segments.length === 1) {
-      const accessToken = await getImwebAccessToken(env);
-      return json({ access_token: accessToken });
-    }
-
-    // /api/imweb/orders ...
-    if (segments[0] === "orders") {
-      if (segments.length === 1) {
-        return await proxyGet(env, `/shop/orders${search}`);
-      }
-      if (segments.length === 2) {
-        return await proxyGet(env, `/shop/orders/${encodeURIComponent(segments[1])}`);
-      }
-      if (segments.length === 3 && segments[2] === "prod-orders") {
-        return await proxyGet(env, `/shop/orders/${encodeURIComponent(segments[1])}/prod-orders`);
-      }
-    }
-
-    // /api/imweb/prod-orders?order_no[]=...
-    if (segments[0] === "prod-orders" && segments.length === 1) {
-      return await proxyGet(env, `/shop/prod-orders${search}`);
-    }
-
-    return json({ error: `Unknown imweb proxy route: /${segments.join("/")}` }, 404);
-  } catch (error: any) {
-    console.error("I'mweb proxy error:", error);
-    return json({ error: error?.message || "Internal Server Error" }, 500);
+  // /api/imweb/token
+  if (segments[0] === "token" && segments.length === 1) {
+    const accessToken = await getImwebAccessToken(env);
+    return json({ access_token: accessToken });
   }
+
+  // /api/imweb/orders ...
+  if (segments[0] === "orders") {
+    if (segments.length === 1) {
+      return proxyGet(env, `/shop/orders${search}`);
+    }
+    if (segments.length === 2) {
+      return proxyGet(env, `/shop/orders/${encodeURIComponent(segments[1])}`);
+    }
+    if (segments.length === 3 && segments[2] === "prod-orders") {
+      return proxyGet(env, `/shop/orders/${encodeURIComponent(segments[1])}/prod-orders`);
+    }
+  }
+
+  // /api/imweb/prod-orders?order_no[]=...
+  if (segments[0] === "prod-orders" && segments.length === 1) {
+    return proxyGet(env, `/shop/prod-orders${search}`);
+  }
+
+  return json({ error: `Unknown imweb proxy route: /${segments.join("/")}` }, 404);
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname.startsWith("/api/imweb/")) {
+      if (request.method !== "GET") {
+        return json({ error: "Method Not Allowed" }, 405);
+      }
+      const segments = url.pathname.replace(/^\/api\/imweb\//, "").split("/").filter(Boolean);
+      try {
+        return await handleImweb(request, env, segments);
+      } catch (error: any) {
+        console.error("I'mweb proxy error:", error);
+        return json({ error: error?.message || "Internal Server Error" }, 500);
+      }
+    }
+
+    // /api/* 외의 요청은 정적 자산(SPA)로 위임 (run_worker_first 설정상 도달하지 않지만 안전망)
+    return env.ASSETS.fetch(request);
+  },
 };
