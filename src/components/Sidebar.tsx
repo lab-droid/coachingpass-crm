@@ -107,13 +107,13 @@ export default function Sidebar(props: SidebarProps) {
 
       {/* Sidebar Container */}
       <aside className={`
-        fixed inset-y-0 left-0 bg-slate-950 text-slate-300 font-sans w-72 h-screen z-50 flex flex-col justify-between border-r border-slate-900 shadow-xl transition-all duration-300 transform
+        fixed inset-y-0 left-0 bg-slate-950 text-slate-300 font-sans w-72 h-screen z-50 flex flex-col border-r border-slate-900 shadow-xl transition-all duration-300 transform
         lg:static lg:translate-x-0
         ${isOpenMobile ? 'translate-x-0' : '-translate-x-full'}
       `}>
         {/* Brand/Header */}
-        <div>
-          <div className="h-20 flex items-center px-6 border-b border-slate-900 justify-between">
+        <div className="flex flex-col flex-1 min-h-0">
+          <div className="h-20 shrink-0 flex items-center px-6 border-b border-slate-900 justify-between">
             <div className="flex items-center space-x-2.5">
               <div className="h-10 w-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center overflow-hidden shadow-lg shadow-slate-300/10 shrink-0">
                 <img
@@ -139,7 +139,7 @@ export default function Sidebar(props: SidebarProps) {
           </div>
 
           {/* Navigation Links */}
-          <nav className="p-4 space-y-1.5 mt-4">
+          <nav className="p-4 space-y-1.5 mt-4 flex-1 overflow-y-auto min-h-0">
             {menuItems.map((item) => {
               const IconComponent = item.icon;
               const isActive = props.activeTab === item.id;
@@ -165,7 +165,7 @@ export default function Sidebar(props: SidebarProps) {
         </div>
 
         {/* User Profile & Logout section at Footer */}
-        <div className="p-4 border-t border-slate-900 bg-slate-950">
+        <div className="p-4 shrink-0 border-t border-slate-900 bg-slate-950">
           <div className="flex items-center space-x-3 p-3 rounded-xl bg-slate-900 border border-slate-900/60 mb-3">
             {props.user.avatarUrl ? (
               <img 

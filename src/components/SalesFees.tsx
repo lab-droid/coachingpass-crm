@@ -79,7 +79,8 @@ export default function SalesFees(props: SalesFeesProps) {
 
   // Compute actual sales managers: merged from database employees (role === '영업팀') and backup static managers
   const salesManagersList = React.useMemo(() => {
-    const activeDbSales = employees.filter(e => e.role === '영업팀' && e.status === 'active');
+    // 영업팀 + 임원도 영업담당으로 선택 가능하도록 포함
+    const activeDbSales = employees.filter(e => e.status === 'active' && (e.role === '영업팀' || e.role === '임원'));
     if (activeDbSales.length > 0) {
       return activeDbSales.map(e => ({
         id: e.id,

@@ -62,7 +62,8 @@ export default function SalesManagement(props: SalesManagementProps) {
 
   // Compute active sales managers pool dynamically (role === '영업팀')
   const salesManagers = React.useMemo(() => {
-    const activeDbSales = employees.filter(e => e.role === '영업팀' && e.status === 'active' && e.department !== '영업부서장');
+    // 영업팀(영업부서장 제외) + 임원도 영업담당으로 지정 가능하도록 포함
+    const activeDbSales = employees.filter(e => e.status === 'active' && ((e.role === '영업팀' && e.department !== '영업부서장') || e.role === '임원'));
     if (activeDbSales.length > 0) {
       return activeDbSales.map(e => e.name);
     }
@@ -447,11 +448,11 @@ export default function SalesManagement(props: SalesManagementProps) {
                                 
                               return (
                                 <div key={idx} className="flex flex-col space-y-1">
-                                  <div className="flex items-center space-x-2">
-                                    <span className={`px-2 py-0.5 border rounded text-[11px] font-bold ${badgeClasses}`}>
+                                  <div className="flex items-start space-x-2">
+                                    <span className={`px-2 py-0.5 border rounded text-[11px] font-bold whitespace-nowrap shrink-0 ${badgeClasses}`}>
                                       {(item.status === 'COMPLETE' || item.status === 'PAY_COMPLETE') ? '구매 확정' : (item.status === 'DELIVERY_READY' ? '배송 대기' : (item.status || '배송대기'))}
                                     </span>
-                                    <span className="font-bold text-slate-900 line-clamp-1 leading-tight text-[13px]">
+                                    <span className="font-bold text-slate-900 leading-snug text-[13px] flex-1 min-w-0 break-keep [overflow-wrap:anywhere]">
                                       {item.name || item.prod_name || '이름 없음'}
                                     </span>
                                   </div>
