@@ -16,12 +16,20 @@ const roundDown = (value: number, digits: number): number => {
  * 아임웹 v2 API는 호출이 잦으면 HTTP 200 + {"code":-7,"msg":"TOO MANY REQUEST"}로
  * 응답한다. 이 경우 지수 백오프로 재시도한다. (성공 신호는 호출부에서 판별)
  */
-export async function fetchImweb(url: string, maxRetries = 4): Promise<{ res: Response; data: any }> {
+export async function fetchImweb(url: string, maxRetries = 4): Promise<{ res: Response; data: any; text: string }> {
   let lastRes!: Response;
   let lastData: any = null;
+  let lastText = '';
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     lastRes = await fetch(url);
-    lastData = await lastRes.json().catch(() => null);
+    // 원본 텍스트를 보존한다. JSON이 아닌 응답(HTML 에러 페이지, 빈 본문 등)이
+    // 와도 그대로 버리지 않고 호출부에서 실제 원인을 진단할 수 있게 한다.
+    lastText = await lastRes.text().catch(() => '');
+    try {
+      lastData = lastText ? JSON.parse(lastText) : null;
+    } catch {
+      lastData = null;
+    }
     // 속도 제한이면 점점 길게 대기 후 재시도 (1.5s, 3s, 4.5s, 6s)
     if (lastData && lastData.code === -7 && attempt < maxRetries) {
       await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)));
@@ -29,7 +37,32 @@ export async function fetchImweb(url: string, maxRetries = 4): Promise<{ res: Re
     }
     break;
   }
-  return { res: lastRes, data: lastData };
+  return { res: lastRes, data: lastData, text: lastText };
+}
+
+/**
+ * 아임웹 응답이 정상 목록이 아닐 때, 가려진 실제 원인을 사람이 읽을 수 있는
+ * 메시지로 변환한다. (HTML 수신=프록시 미동작, 아임웹 에러코드/메시지 등)
+ */
+function describeImwebFailure(res: Response | undefined, data: any, text: string): string {
+  if (data?.error) return data.error;
+  if (data?.msg) return data.msg;
+
+  const status = res?.status;
+  const trimmed = (text || '').trim();
+
+  // JSON이 아닌 HTML 응답 → 대부분 API 프록시 서버가 떠 있지 않아 SPA(index.html)가
+  // 대신 반환된 경우다. 배포 환경에서 server.cjs(Express API 서버)가 실행 중이어야 한다.
+  if (/^<(?:!doctype|html)/i.test(trimmed)) {
+    return `API 프록시 서버가 응답하지 않습니다 (HTML 수신, HTTP ${status}). `
+      + `배포 환경에서 API 서버(server.cjs)가 실행 중이고 IMWEB_API_KEY/IMWEB_SECRET 환경변수가 설정되어 있는지 확인해주세요.`;
+  }
+
+  if (!trimmed) {
+    return `아임웹이 빈 응답을 반환했습니다 (HTTP ${status}).`;
+  }
+
+  return `예상치 못한 응답 (HTTP ${status}): ${trimmed.slice(0, 200)}`;
 }
 
 export interface ImwebSyncResult {
@@ -59,7 +92,7 @@ export async function syncImwebOrders(
   const TARGET_TIMESTAMP = new Date('2026-05-01T00:00:00+09:00').getTime() / 1000;
 
   while (keepFetching && offset < 50) { // Limit absolute max loops
-    const { res, data } = await fetchImweb(`/api/imweb/orders?limit=100&offset=${offset}`);
+    const { res, data, text } = await fetchImweb(`/api/imweb/orders?limit=100&offset=${offset}`);
 
     // 주의: 아임웹 v2 API는 인증 실패 등 오류 상황에서도 HTTP 200을 반환하고
     // 본문에 {"msg":"...Error","code":-5} 형태로 결과를 담는다. 검증된 성공 신호는
@@ -67,7 +100,8 @@ export async function syncImwebOrders(
     const list = Array.isArray(data?.data?.list) ? data.data.list : null;
 
     if (!list) {
-      const reason = data?.error || data?.msg || `HTTP ${res?.status}`;
+      // 실패 원인을 가리지 않고 실제 응답(HTML/빈 본문/에러코드 등)을 진단해 노출한다.
+      const reason = describeImwebFailure(res, data, text);
       return { sales: currentSales, syncedCount: 0, error: reason };
     }
 

@@ -26,14 +26,20 @@ async function getImwebAccessToken(): Promise<string> {
 
   const tokenUrl = `https://api.imweb.me/v2/auth?key=${apiKey}&secret=${secret}`;
   const tokenRes = await fetch(tokenUrl, { method: "GET" });
+  const tokenText = await tokenRes.text();
   if (!tokenRes.ok) {
-    const errorText = await tokenRes.text();
-    throw new Error(`Failed to authenticate with I'mweb: ${errorText}`);
+    throw new Error(`Failed to authenticate with I'mweb (HTTP ${tokenRes.status}): ${tokenText.slice(0, 200)}`);
   }
 
   // 주의: 아임웹 v2 인증은 키가 틀려도 HTTP 200을 반환하고 본문에
   // {"msg":"API Key Error","code":-1} 형태로 결과를 담는다. 따라서 본문을 확인한다.
-  const tokenData = await tokenRes.json() as any;
+  // 또한 점검/마이그레이션 등으로 JSON이 아닌(HTML) 응답이 올 수 있어 안전하게 파싱한다.
+  let tokenData: any;
+  try {
+    tokenData = JSON.parse(tokenText);
+  } catch {
+    throw new Error(`I'mweb auth returned non-JSON response (HTTP ${tokenRes.status}): ${tokenText.slice(0, 200)}`);
+  }
   if (!tokenData.access_token) {
     const reason = tokenData?.msg || "No access token in response.";
     throw new Error(`I'mweb auth failed: ${reason}`);
@@ -87,7 +93,11 @@ async function startServer() {
       try {
         ordersData = JSON.parse(text);
       } catch(e) {
-        return res.status(ordersRes.status).send(text);
+        // 아임웹이 JSON이 아닌(HTML/빈) 응답을 보내면 클라이언트가 원인을 알 수 있도록
+        // 구조화된 JSON 에러로 변환해 전달한다. (raw text는 클라이언트에서 null이 됨)
+        return res.status(502).json({
+          error: `아임웹이 JSON이 아닌 응답을 반환했습니다 (HTTP ${ordersRes.status}): ${text.slice(0, 300)}`
+        });
       }
 
       if (!ordersRes.ok) {
@@ -160,7 +170,9 @@ async function startServer() {
       try {
         data = JSON.parse(text);
       } catch (e) {
-        return res.status(ordersRes.status).send(text);
+        return res.status(502).json({
+          error: `아임웹 prod-orders 응답이 JSON이 아닙니다 (HTTP ${ordersRes.status}): ${text.slice(0, 300)}`
+        });
       }
       res.status(ordersRes.status).json(data);
     } catch (error) {
