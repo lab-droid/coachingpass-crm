@@ -8,7 +8,7 @@ import { motion } from 'motion/react';
 import { Server, ShieldCheck, AlertCircle, Sparkles, Lock, Mail, Eye, EyeOff, ExternalLink, Smartphone } from 'lucide-react';
 import { User, UserAccount } from '../types';
 import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import logoUrl from '../assets/images/coachingpass_logo.png';
 
@@ -23,6 +23,17 @@ const MOCK_ACCOUNTS = [
 
 // Firebase Auth 인프라 문제(제공자 미활성/네트워크)로 판단되면 레거시 로그인으로 폴백해야 하는 에러코드
 const AUTH_FALLBACK_CODES = ['auth/operation-not-allowed', 'auth/network-request-failed', 'auth/internal-error', 'auth/configuration-not-found', 'auth/api-key-not-valid'];
+
+// 해당 이메일의 임직원이 '퇴사(resigned/inactive)' 상태면 로그인 차단
+async function isEmployeeResigned(email: string): Promise<boolean> {
+  try {
+    const snap = await getDocs(collection(db, 'employees'));
+    const emp = snap.docs.map(d => d.data() as any).find(e => (e.email || '').toLowerCase() === email);
+    return !!emp && (emp.status === 'resigned' || emp.status === 'inactive');
+  } catch {
+    return false;
+  }
+}
 
 // user_accounts + 캐시 + 목업에서 email/password로 레거시 계정 조회
 async function findLegacyAccount(email: string, password: string): Promise<UserAccount | undefined> {
@@ -252,6 +263,12 @@ export default function Login(props: LoginProps) {
       }
 
       if (authResult) {
+        if (await isEmployeeResigned(email)) {
+          try { await signOut(auth); } catch { /* ignore */ }
+          setErrorCode("퇴사 처리된 계정으로 로그인이 차단되었습니다. 관리자에게 문의하세요.");
+          setIsLoading(false);
+          return;
+        }
         const loggedInUser: User = {
           id: authResult.id,
           email,
@@ -274,6 +291,11 @@ export default function Login(props: LoginProps) {
       }
       if (matchedAccount.status === 'inactive') {
         setErrorCode("해당 계정은 시스템 운영자에 의해 정지(비활성화)된 계정입니다.");
+        setIsLoading(false);
+        return;
+      }
+      if (await isEmployeeResigned(email)) {
+        setErrorCode("퇴사 처리된 계정으로 로그인이 차단되었습니다. 관리자에게 문의하세요.");
         setIsLoading(false);
         return;
       }

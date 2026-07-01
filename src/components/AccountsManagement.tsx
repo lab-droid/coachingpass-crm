@@ -108,7 +108,7 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
   useEffect(() => {
     const unsubEmployees = onSnapshot(collection(db, 'employees'), (snap) => {
       const dbEmployees = snap.docs.map(d => d.data() as Employee);
-      setEmployees(dbEmployees.filter(e => e.status === 'active'));
+      setEmployees(dbEmployees.filter(e => e.status !== 'resigned' && e.status !== 'inactive'));
     });
 
     const unsubCoaches = onSnapshot(collection(db, 'coaches'), (snap) => {

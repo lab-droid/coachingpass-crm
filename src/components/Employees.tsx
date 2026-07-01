@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { Employee, User } from '../types';
 import { db, handleFirestoreError, OperationType, isQuotaExceeded } from '../firebase';
-import { collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
+import { collection, onSnapshot, setDoc, doc, deleteDoc, getDocs } from 'firebase/firestore';
 import { generateTempPassword } from '../utils/password';
 
 // Initial internal mock staff in case empty
@@ -568,6 +568,24 @@ const RAW_DEFAULT_EMPLOYEES: Employee[] = [
 // 사번(CP0001~) 생성 헬퍼 — 대표이사(emp_001)가 목록 맨 앞이므로 CP0001이 됨
 const formatEmployeeNumber = (seq: number) => 'CP' + String(seq).padStart(4, '0');
 
+// 연락처를 010-1234-5678 형식으로 자동 포맷
+const formatPhone = (value: string): string => {
+  const digits = (value || '').replace(/\D/g, '').slice(0, 11);
+  if (digits.length < 4) return digits;
+  if (digits.length < 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  if (digits.length < 11) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+};
+
+// 재직 상태 라벨/색상
+const STATUS_META: Record<string, { label: string; badge: string; dot: string }> = {
+  active: { label: '재직 중', badge: 'bg-emerald-50 text-emerald-700 border border-emerald-100', dot: 'bg-emerald-500' },
+  leave: { label: '휴직중', badge: 'bg-amber-50 text-amber-700 border border-amber-100', dot: 'bg-amber-500' },
+  resigned: { label: '퇴사', badge: 'bg-rose-50 text-rose-700 border border-rose-100', dot: 'bg-rose-500' },
+  inactive: { label: '퇴사', badge: 'bg-rose-50 text-rose-700 border border-rose-100', dot: 'bg-rose-500' },
+};
+const getStatusMeta = (status?: string) => STATUS_META[status || 'active'] || STATUS_META.active;
+
 const DEFAULT_EMPLOYEES: Employee[] = RAW_DEFAULT_EMPLOYEES.map((emp, i) => {
   const employeeNumber = formatEmployeeNumber(i + 1); // 순서대로 사번 부여 (대표이사 = CP0001)
   const initialPassword = generateTempPassword(); // 초기(임시) 랜덤 비밀번호
@@ -733,7 +751,8 @@ export default function Employees({ user }: EmployeesProps) {
                           emp.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           emp.phone.includes(searchTerm);
     const matchesRole = roleFilter === 'all' || emp.role === roleFilter;
-    const matchesStatus = statusFilter === 'all' || emp.status === statusFilter;
+    const normStatus = emp.status === 'inactive' ? 'resigned' : (emp.status || 'active');
+    const matchesStatus = statusFilter === 'all' || normStatus === statusFilter;
     const matchesDept = deptFilter === 'all' || emp.department === deptFilter;
 
     return matchesSearch && matchesRole && matchesStatus && matchesDept;
@@ -742,7 +761,7 @@ export default function Employees({ user }: EmployeesProps) {
   // Calculate high-quality KPIs
   const totalCount = employees.length;
   const activeCount = employees.filter(e => e.status === 'active').length;
-  const inactiveCount = employees.filter(e => e.status === 'inactive').length;
+  const inactiveCount = employees.filter(e => e.status !== 'active').length;
 
   // 다음 사번(CP####) 자동 채번 — 기존 최대 번호 + 1
   const nextEmployeeNumber = () => {
@@ -808,10 +827,25 @@ export default function Employees({ user }: EmployeesProps) {
       }
 
       await setDoc(doc(db, 'employees', employeeId), savedEmployee);
+
+      // 퇴사 시 해당 임직원의 로그인 계정을 비활성(차단), 그 외에는 활성화하여 동기화
+      try {
+        const accSnap = await getDocs(collection(db, 'user_accounts'));
+        const linked = accSnap.docs.filter(d => (d.data() as any).employeeId === employeeId);
+        const nextAccStatus = savedEmployee.status === 'resigned' ? 'inactive' : 'active';
+        await Promise.all(
+          linked
+            .filter(d => (d.data() as any).status !== nextAccStatus)
+            .map(d => setDoc(doc(db, 'user_accounts', d.id), { status: nextAccStatus }, { merge: true }))
+        );
+      } catch (accErr) {
+        console.warn('연동 계정 상태 동기화 실패(비차단):', accErr);
+      }
+
       setIsModalOpen(false);
-      
-      showToast(isEditing 
-        ? `${savedEmployee.name} 임직원 정보가 수정되었습니다.` 
+
+      showToast(isEditing
+        ? `${savedEmployee.name} 임직원 정보가 수정되었습니다.${savedEmployee.status === 'resigned' ? ' (로그인 차단됨)' : ''}`
         : `신규 임직원 ${savedEmployee.name}님이 등록되었습니다.`
       );
     } catch (error) {
@@ -988,7 +1022,8 @@ export default function Employees({ user }: EmployeesProps) {
             >
               <option value="all">모든 상태</option>
               <option value="active">재직 중</option>
-              <option value="inactive">퇴사/휴직</option>
+              <option value="leave">휴직중</option>
+              <option value="resigned">퇴사</option>
             </select>
           </div>
         </div>
@@ -1096,13 +1131,9 @@ export default function Employees({ user }: EmployeesProps) {
                       </span>
                     </td>
                     <td className="px-6 py-4.5 border-b border-slate-100 font-semibold">
-                      <span className={`inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-[10px] uppercase tracking-wider ${
-                        emp.status === 'active' 
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
-                          : 'bg-rose-50 text-rose-700 border border-rose-100'
-                      }`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${emp.status === 'active' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                        <span>{emp.status === 'active' ? '재직 중' : '퇴직'}</span>
+                      <span className={`inline-flex items-center space-x-1 px-2.5 py-1 rounded-full text-[10px] uppercase tracking-wider ${getStatusMeta(emp.status).badge}`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${getStatusMeta(emp.status).dot}`} />
+                        <span>{getStatusMeta(emp.status).label}</span>
                       </span>
                     </td>
                     <td className="px-6 py-4.5 border-b border-slate-100 text-right">
@@ -1264,10 +1295,12 @@ export default function Employees({ user }: EmployeesProps) {
                     <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">휴대전화 번호</label>
                     <input
                       type="text"
+                      inputMode="numeric"
+                      maxLength={13}
                       disabled={!isAdmin}
                       value={currentEmployee?.phone || ''}
-                      onChange={(e) => setCurrentEmployee({ ...currentEmployee, phone: e.target.value })}
-                      placeholder="연락처를 직접 입력하세요"
+                      onChange={(e) => setCurrentEmployee({ ...currentEmployee, phone: formatPhone(e.target.value) })}
+                      placeholder="010-1234-5678"
                       className="w-full px-3.5 py-2.5 text-xs border border-slate-200 bg-slate-50 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-all font-mono font-medium"
                     />
                   </div>
@@ -1291,13 +1324,14 @@ export default function Employees({ user }: EmployeesProps) {
                   <div>
                     <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">재직 상태</label>
                     <select
-                      value={currentEmployee?.status || 'active'}
+                      value={currentEmployee?.status === 'inactive' ? 'resigned' : (currentEmployee?.status || 'active')}
                       disabled={!isAdmin}
                       onChange={(e) => setCurrentEmployee({ ...currentEmployee, status: e.target.value as any })}
                       className="w-full px-3.5 py-2.5 text-xs border border-slate-200 bg-slate-50 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden font-semibold"
                     >
-                      <option value="active">재직 중 (Active)</option>
-                      <option value="inactive">휴직/퇴직 (Inactive)</option>
+                      <option value="active">재직 중</option>
+                      <option value="leave">휴직중</option>
+                      <option value="resigned">퇴사 (로그인 차단)</option>
                     </select>
                   </div>
                 </div>

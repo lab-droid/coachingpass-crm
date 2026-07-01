@@ -88,7 +88,7 @@ export interface Employee {
   role: '코치' | '영업팀' | '관리자' | '임원';
   department: string;
   joinedDate: string;
-  status: 'active' | 'inactive';
+  status: 'active' | 'leave' | 'resigned' | 'inactive'; // 재직중 / 휴직중 / 퇴사 (inactive=구버전 호환)
   baseSalary?: number;
   salesTarget?: number;
   commissionRate?: number; // 수수료율 (%) for 영업팀
