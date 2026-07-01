@@ -36,6 +36,21 @@ service cloud.firestore {
     match /user_accounts/{accountId} {
       allow read, write: if true;
     }
+
+    // 감사 로그: 정산/삭제/월마감 이력. 보안 규칙 잠금 후에는 append-only(생성만 허용)로 전환 권장.
+    match /audit_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    // 월 마감(정산 잠금) 설정
+    match /settlement_locks/{docId} {
+      allow read, write: if true;
+    }
   }
 }
+
+// ⚠️ 보안 경고: 현재 규칙은 전체 개방(allow read, write: if true) 상태입니다.
+//    누구나 URL만 알면 급여/고객정보를 읽고 임의 수정/삭제할 수 있습니다.
+//    잠금 방법은 firestore.rules.secure 파일과 마이그레이션 절차를 참고하세요.
+//    (자격증명 로그인이 Firebase Auth로 이관되어야 안전하게 적용할 수 있습니다.)
 

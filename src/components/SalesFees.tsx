@@ -21,11 +21,13 @@ import {
   Target,
   FileSpreadsheet,
   AlertCircle,
-  FileText
+  FileText,
+  Lock,
+  Unlock
 } from 'lucide-react';
-import { SalesFeeItem, Sale, Employee } from '../types';
-import { db, handleFirestoreError, OperationType } from '../firebase';
-import { collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
+import { SalesFeeItem, Sale, Employee, User } from '../types';
+import { db, handleFirestoreError, OperationType, writeAuditLog } from '../firebase';
+import { collection, onSnapshot, setDoc, doc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { COACH_TARIFF_TABLE } from '../data/coachTariff';
 
 // Excel ROUNDDOWN equivalent helper
@@ -45,10 +47,14 @@ export const STATIC_SALES_MANAGERS = [
 interface SalesFeesProps {
   sales: Sale[];
   setSales?: (newSalesAction: Sale[] | ((prev: Sale[]) => Sale[])) => void;
+  user?: User;
 }
 
 export default function SalesFees(props: SalesFeesProps) {
+  const isAdmin = props.user?.role === 'admin';
+  const auditActor = { id: props.user?.id, name: props.user?.name, email: props.user?.email, role: props.user?.role };
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [lockedMonths, setLockedMonths] = useState<string[]>([]);
   const [coachNames, setCoachNames] = useState<string[]>(() =>
     Array.from(new Set(COACH_TARIFF_TABLE.map(t => t.coachName))).sort()
   );
@@ -98,6 +104,56 @@ export default function SalesFees(props: SalesFeesProps) {
     });
     return () => unsub();
   }, []);
+
+  // 월 마감(정산 잠금) 상태 구독
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'settings', 'settlement_locks'), (snap) => {
+      const data = snap.data() as { months?: string[] } | undefined;
+      setLockedMonths(Array.isArray(data?.months) ? data!.months! : []);
+    }, (error) => {
+      console.error("Firestore settlement_locks load error in SalesFees:", error);
+    });
+    return () => unsub();
+  }, []);
+
+  const isMonthLocked = (dateStr: string) => lockedMonths.includes((dateStr || '').substring(0, 7));
+
+  // 잠긴(마감된) 월의 데이터 수정을 차단
+  const blockedByLock = (dateStr?: string): boolean => {
+    if (dateStr && isMonthLocked(dateStr)) {
+      alert(`${dateStr.substring(0, 7)}월은 정산 마감(잠금)되어 수정할 수 없습니다. 관리자에게 문의하세요.`);
+      return true;
+    }
+    return false;
+  };
+
+  // 월 마감 잠금/해제 (관리자)
+  const toggleMonthLock = async (month: string) => {
+    if (!isAdmin) {
+      alert('월 마감은 관리자만 설정할 수 있습니다.');
+      return;
+    }
+    if (!month || month === 'all') {
+      alert('먼저 월 필터에서 특정 월을 선택해 주세요.');
+      return;
+    }
+    const currentlyLocked = lockedMonths.includes(month);
+    const next = currentlyLocked ? lockedMonths.filter(m => m !== month) : [...lockedMonths, month];
+    try {
+      await setDoc(doc(db, 'settings', 'settlement_locks'), { months: next }, { merge: true });
+      await writeAuditLog({
+        action: currentlyLocked ? 'month_unlock' : 'month_lock',
+        entity: 'settlement',
+        entityId: month,
+        actor: auditActor,
+        details: { month }
+      });
+      showToast(`${month}월 정산이 ${currentlyLocked ? '마감 해제' : '마감(잠금)'}되었습니다.`);
+    } catch (e) {
+      console.error('month lock toggle failed:', e);
+      alert('월 마감 설정 중 오류가 발생했습니다.');
+    }
+  };
 
   // Compute actual sales managers: merged from database employees (role === '영업팀') and backup static managers
   const salesManagersList = React.useMemo(() => {
@@ -244,26 +300,35 @@ export default function SalesFees(props: SalesFeesProps) {
     monthFilter !== 'all' ||
     coachFilter !== 'all';
 
-  // Bulk mark a set of sales-fee rows as 정산완료 — writes to the shared sales records
+  // Bulk mark a set of sales-fee rows as 정산완료 — writes to the shared sales records (atomic batch)
   const handleBulkCompleteSales = async (items: SalesFeeItem[], label: string) => {
-    const targets = items.filter(i => i.status !== 'completed');
+    const lockedCount = items.filter(i => i.status !== 'completed' && isMonthLocked(i.date)).length;
+    const targets = items.filter(i => i.status !== 'completed' && !isMonthLocked(i.date));
     if (targets.length === 0) {
-      showToast('이미 모두 정산완료 상태이거나 대상이 없습니다.');
+      showToast(lockedCount > 0 ? '대상이 마감(잠금)된 월이라 처리할 수 없습니다.' : '이미 모두 정산완료 상태이거나 대상이 없습니다.');
       return;
     }
-    if (!confirm(`${label} ${targets.length}건을 일괄 정산완료 처리하시겠습니까?`)) return;
+    const lockNote = lockedCount > 0 ? ` (마감된 월 ${lockedCount}건 제외)` : '';
+    if (!confirm(`${label} ${targets.length}건을 일괄 정산완료 처리하시겠습니까?${lockNote}`)) return;
 
-    const ids = new Set(targets.map(i => i.salesId || i.id));
+    const ids = Array.from(new Set(targets.map(i => i.salesId || i.id)));
     try {
       if (props.setSales) {
-        props.setSales(prev => prev.map(s => ids.has(s.id) ? { ...s, status: 'completed', holdReason: '' } : s));
+        const idSet = new Set(ids);
+        props.setSales(prev => prev.map(s => idSet.has(s.id) ? { ...s, status: 'completed', holdReason: '' } : s));
       } else {
-        await Promise.all(
-          Array.from(ids).map(id => setDoc(doc(db, 'sales', id), { status: 'completed', holdReason: '' }, { merge: true }))
-        );
+        const batch = writeBatch(db);
+        ids.forEach(id => batch.set(doc(db, 'sales', id), { status: 'completed', holdReason: '' }, { merge: true }));
+        await batch.commit();
       }
+      await writeAuditLog({
+        action: 'bulk_settle',
+        entity: 'sales_fee',
+        actor: auditActor,
+        details: { count: ids.length, scope: label, excludedLocked: lockedCount, saleIds: ids }
+      });
       setSelectedSalesIds(new Set());
-      showToast(`${targets.length}건이 일괄 정산완료 처리되었습니다.`);
+      showToast(`${targets.length}건이 일괄 정산완료 처리되었습니다.${lockNote}`);
     } catch (e) {
       console.error("Bulk complete failed:", e);
       alert('일괄 정산 처리 중 오류가 발생했습니다.');
@@ -296,6 +361,7 @@ export default function SalesFees(props: SalesFeesProps) {
     try {
       const existingSale = props.sales.find(s => s.id === saleId);
       if (existingSale) {
+        if (blockedByLock(existingSale.date)) return;
         const totalSales = existingSale.amount || 0;
         const vat = Math.round(totalSales * 0.1);
         const supplyPrice = totalSales - vat;
@@ -380,13 +446,14 @@ export default function SalesFees(props: SalesFeesProps) {
 
   // Update Payout Status (supports hold and holdReason)
   const handleUpdateStatus = async (item: SalesFeeItem, nextStatus: 'pending' | 'completed' | 'hold') => {
+    if (blockedByLock(item.date)) return;
     const saleId = item.salesId || item.id;
     let holdReason = item.holdReason || '';
     if (nextStatus === 'hold' && !holdReason) {
       const reason = prompt('정산 보류 사유를 입력해 주세요:') || '';
       holdReason = reason;
     }
-    
+
     try {
       const updatedFields = {
         status: nextStatus,
@@ -397,6 +464,13 @@ export default function SalesFees(props: SalesFeesProps) {
       } else {
         await setDoc(doc(db, 'sales', saleId), updatedFields, { merge: true });
       }
+      await writeAuditLog({
+        action: 'settle_status',
+        entity: 'sales_fee',
+        entityId: saleId,
+        actor: auditActor,
+        details: { status: nextStatus, manager: item.managerName, customer: item.customerName, amount: item.salesAmount }
+      });
       showToast(`${item.managerName} 님의 영업 수수료를 ${nextStatus === 'completed' ? '지급 완료(완결)' : nextStatus === 'hold' ? '정산 보류' : '정산 대기'} 상태로 갱신 완료했습니다.`);
     } catch (err) {
       console.error("Error updating payout status:", err);
@@ -424,6 +498,7 @@ export default function SalesFees(props: SalesFeesProps) {
     try {
       const existingSale = props.sales.find(s => s.id === saleId);
       if (!existingSale) return;
+      if (blockedByLock(existingSale.date)) return;
 
       let updatePayload: any = { [fieldName]: value };
 
@@ -486,7 +561,8 @@ export default function SalesFees(props: SalesFeesProps) {
   };
 
   // Delete sales fee item
-  const handleDeleteFee = async (id: string, rep: string, client: string) => {
+  const handleDeleteFee = async (id: string, rep: string, client: string, date?: string) => {
+    if (blockedByLock(date)) return;
     if (confirm(`선택한 영업 수수료 전산 데이터 (${rep} → ${client})를 완전히 전산 삭제하시겠습니까?`)) {
       try {
         if (props.setSales) {
@@ -494,6 +570,13 @@ export default function SalesFees(props: SalesFeesProps) {
         } else {
           await deleteDoc(doc(db, 'sales', id));
         }
+        await writeAuditLog({
+          action: 'delete',
+          entity: 'sales_fee',
+          entityId: id,
+          actor: auditActor,
+          details: { manager: rep, customer: client, date }
+        });
         showToast('영업 수수료 내역이 완전히 영구 삭제 처리되었습니다.');
       } catch (err) {
         console.error("Error deleting fee sale:", err);
@@ -841,9 +924,33 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                 >
                   <option value="all">전체 월필터</option>
                   {uniqueMonths.map(m => (
-                    <option key={m} value={m}>{m.replace('-', '년 ')}월</option>
+                    <option key={m} value={m}>{m.replace('-', '년 ')}월{lockedMonths.includes(m) ? ' 🔒' : ''}</option>
                   ))}
                 </select>
+
+                {/* 월 마감(잠금) 토글 - 특정 월 선택 시 */}
+                {monthFilter !== 'all' && (
+                  isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleMonthLock(monthFilter)}
+                      className={`flex items-center space-x-1.5 px-2.5 py-1.5 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                        lockedMonths.includes(monthFilter)
+                          ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                      title="이 월의 정산을 마감/해제합니다 (관리자)"
+                    >
+                      {lockedMonths.includes(monthFilter) ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                      <span>{lockedMonths.includes(monthFilter) ? '마감 해제' : '월 마감'}</span>
+                    </button>
+                  ) : lockedMonths.includes(monthFilter) ? (
+                    <span className="flex items-center space-x-1.5 px-2.5 py-1.5 text-xs font-bold rounded-xl bg-rose-50 text-rose-700 border border-rose-200">
+                      <Lock className="h-3.5 w-3.5" />
+                      <span>마감됨</span>
+                    </span>
+                  ) : null
+                )}
 
                 {/* Coach Filter */}
                 <select
@@ -1111,7 +1218,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                             {/* Delete Button */}
                             <td className="p-1 text-center">
                               <button
-                                onClick={() => handleDeleteFee(fee.id, fee.managerName, fee.customerName)}
+                                onClick={() => handleDeleteFee(fee.id, fee.managerName, fee.customerName, fee.date)}
                                 className="p-1 text-slate-350 hover:text-rose-500 hover:bg-rose-100/30 rounded duration-75 cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5 mx-auto" />

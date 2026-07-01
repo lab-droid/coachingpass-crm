@@ -20,11 +20,13 @@ import {
   Briefcase,
   AlertCircle,
   X,
-  FileText
+  FileText,
+  Lock,
+  Unlock
 } from 'lucide-react';
 import { Coach, CoachFeeItem, Sale, User } from '../types';
-import { db, handleFirestoreError, OperationType, isQuotaExceeded } from '../firebase';
-import { collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType, isQuotaExceeded, writeAuditLog } from '../firebase';
+import { collection, onSnapshot, setDoc, doc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { COACH_TARIFF_TABLE, CoachTariff } from '../data/coachTariff';
 
 const getUniqueCoachesFromTariff = (): Coach[] => {
@@ -92,6 +94,10 @@ export default function CoachFees(props: CoachFeesProps) {
 
   // Bulk settlement selection
   const [selectedFeeIds, setSelectedFeeIds] = useState<Set<string>>(new Set());
+
+  // 월 마감(정산 잠금)
+  const [lockedMonths, setLockedMonths] = useState<string[]>([]);
+  const auditActor = { id: props.user?.id, name: props.user?.name, email: props.user?.email, role: props.user?.role };
 
   // New item inputs
   const [newCoach, setNewCoach] = useState<Partial<Coach>>({
@@ -204,6 +210,17 @@ export default function CoachFees(props: CoachFeesProps) {
     });
 
     return () => unsubTariffs();
+  }, []);
+
+  // 월 마감(정산 잠금) 상태 구독
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'settings', 'settlement_locks'), (snap) => {
+      const data = snap.data() as { months?: string[] } | undefined;
+      setLockedMonths(Array.isArray(data?.months) ? data!.months! : []);
+    }, (error) => {
+      console.error("Firestore settlement_locks load error in CoachFees:", error);
+    });
+    return () => unsub();
   }, []);
 
   // Autofill tier fee rates or tariff amount
@@ -439,26 +456,74 @@ export default function CoachFees(props: CoachFeesProps) {
     ledgerManagerFilter !== 'all' ||
     ledgerMonthFilter !== 'all';
 
-  // Bulk mark a set of fee rows as 정산완료 (settled) — writes to the shared sales records
-  const handleBulkCompleteFees = async (items: CoachFeeItem[], label: string) => {
-    const targets = items.filter(i => i.status !== 'completed');
-    if (targets.length === 0) {
-      showToast('이미 모두 정산완료 상태이거나 대상이 없습니다.');
+  const isMonthLocked = (dateStr: string) => lockedMonths.includes((dateStr || '').substring(0, 7));
+
+  // 잠긴(마감된) 월의 데이터 수정을 차단
+  const blockedByLock = (dateStr?: string): boolean => {
+    if (dateStr && isMonthLocked(dateStr)) {
+      alert(`${dateStr.substring(0, 7)}월은 정산 마감(잠금)되어 수정할 수 없습니다. 관리자에게 문의하세요.`);
+      return true;
+    }
+    return false;
+  };
+
+  // 월 마감 잠금/해제 (관리자)
+  const toggleMonthLock = async (month: string) => {
+    if (!isAdmin) {
+      alert('월 마감은 관리자만 설정할 수 있습니다.');
       return;
     }
-    if (!confirm(`${label} ${targets.length}건을 일괄 정산완료 처리하시겠습니까?`)) return;
+    if (!month || month === 'all') {
+      alert('먼저 월 필터에서 특정 월을 선택해 주세요.');
+      return;
+    }
+    const currentlyLocked = lockedMonths.includes(month);
+    const next = currentlyLocked ? lockedMonths.filter(m => m !== month) : [...lockedMonths, month];
+    try {
+      await setDoc(doc(db, 'settings', 'settlement_locks'), { months: next }, { merge: true });
+      await writeAuditLog({
+        action: currentlyLocked ? 'month_unlock' : 'month_lock',
+        entity: 'settlement',
+        entityId: month,
+        actor: auditActor,
+        details: { month }
+      });
+      showToast(`${month}월 정산이 ${currentlyLocked ? '마감 해제' : '마감(잠금)'}되었습니다.`);
+    } catch (e) {
+      console.error('month lock toggle failed:', e);
+      alert('월 마감 설정 중 오류가 발생했습니다.');
+    }
+  };
 
-    const ids = new Set(targets.map(i => i.id));
+  // Bulk mark a set of fee rows as 정산완료 (settled) — writes to the shared sales records (atomic batch)
+  const handleBulkCompleteFees = async (items: CoachFeeItem[], label: string) => {
+    const lockedCount = items.filter(i => i.status !== 'completed' && isMonthLocked(i.date)).length;
+    const targets = items.filter(i => i.status !== 'completed' && !isMonthLocked(i.date));
+    if (targets.length === 0) {
+      showToast(lockedCount > 0 ? '대상이 마감(잠금)된 월이라 처리할 수 없습니다.' : '이미 모두 정산완료 상태이거나 대상이 없습니다.');
+      return;
+    }
+    const lockNote = lockedCount > 0 ? ` (마감된 월 ${lockedCount}건 제외)` : '';
+    if (!confirm(`${label} ${targets.length}건을 일괄 정산완료 처리하시겠습니까?${lockNote}`)) return;
+
+    const ids = Array.from(new Set(targets.map(i => i.id)));
     try {
       if (props.setSales) {
-        props.setSales(prev => prev.map(s => ids.has(s.id) ? { ...s, status: 'completed', holdReason: '' } : s));
+        const idSet = new Set(ids);
+        props.setSales(prev => prev.map(s => idSet.has(s.id) ? { ...s, status: 'completed', holdReason: '' } : s));
       } else {
-        await Promise.all(
-          Array.from(ids).map(id => setDoc(doc(db, 'sales', id), { status: 'completed', holdReason: '' }, { merge: true }))
-        );
+        const batch = writeBatch(db);
+        ids.forEach(id => batch.set(doc(db, 'sales', id), { status: 'completed', holdReason: '' }, { merge: true }));
+        await batch.commit();
       }
+      await writeAuditLog({
+        action: 'bulk_settle',
+        entity: 'coach_fee',
+        actor: auditActor,
+        details: { count: ids.length, scope: label, excludedLocked: lockedCount, saleIds: ids }
+      });
       setSelectedFeeIds(new Set());
-      showToast(`${targets.length}건이 일괄 정산완료 처리되었습니다.`);
+      showToast(`${targets.length}건이 일괄 정산완료 처리되었습니다.${lockNote}`);
     } catch (e) {
       console.error("Bulk complete failed:", e);
       alert('일괄 정산 처리 중 오류가 발생했습니다.');
@@ -598,6 +663,7 @@ export default function CoachFees(props: CoachFeesProps) {
 
   // Individual coach status updater (supports hold and reasons)
   const handleUpdateCoachFeeStatus = async (item: CoachFeeItem, nextStatus: 'pending' | 'completed' | 'hold') => {
+    if (blockedByLock(item.date)) return;
     const saleId = item.id;
     let holdReason = item.holdReason || '';
     if (nextStatus === 'hold' && !holdReason) {
@@ -615,6 +681,13 @@ export default function CoachFees(props: CoachFeesProps) {
       } else {
         await setDoc(doc(db, 'sales', saleId), updatedFields, { merge: true });
       }
+      await writeAuditLog({
+        action: 'settle_status',
+        entity: 'coach_fee',
+        entityId: saleId,
+        actor: auditActor,
+        details: { status: nextStatus, coach: item.coachName, customer: item.customerName, fee: item.calculatedFee }
+      });
       showToast(`${item.coachName} 코치 정산 상태가 ${nextStatus === 'completed' ? '정산 완료' : nextStatus === 'hold' ? '정산 보류' : '정산 대기'} 상태로 갱신 완료되었습니다.`);
     } catch (e) {
       console.error(e);
@@ -622,6 +695,7 @@ export default function CoachFees(props: CoachFeesProps) {
   };
 
   const handleUpdateCoachFeeField = async (item: CoachFeeItem, fieldName: string, value: any) => {
+    if (blockedByLock(item.date)) return;
     const saleId = item.id;
     try {
       const updatedFields = {
@@ -648,7 +722,8 @@ export default function CoachFees(props: CoachFeesProps) {
   };
 
   // Delete Fee Item (Deletes from sales database)
-  const handleDeleteFee = async (id: string, name: string) => {
+  const handleDeleteFee = async (id: string, name: string, date?: string) => {
+    if (blockedByLock(date)) return;
     if (confirm(`선택한 코치 수수료 전산 기록 (${name})을 완전히 영구 삭제 처리하시겠습니까? (영업/수수료 정산 대장에서 담당코치를 '없음'으로 변경하는 형태로도 연동됩니다)`)) {
       try {
         if (id.startsWith('cf_sale_') || id.startsWith('manual_cf_')) {
@@ -670,6 +745,13 @@ export default function CoachFees(props: CoachFeesProps) {
           }
           showToast('매출 정산 대장에서 해당 건의 담당코치 배정이 해제되었습니다.');
         }
+        await writeAuditLog({
+          action: 'delete',
+          entity: 'coach_fee',
+          entityId: id,
+          actor: auditActor,
+          details: { label: name, date }
+        });
       } catch (err) {
         console.error("Error deleting coach fee sale:", err);
       }
@@ -740,8 +822,9 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
 
   // Change individual cells of a row (Propagates back to shared sales database)
   const handleCellChange = async (fee: CoachFeeItem, field: keyof CoachFeeItem, value: any) => {
+    if (blockedByLock(fee.date)) return;
     const saleId = fee.id;
-    
+
     try {
       const existingSale = props.sales.find(s => s.id === saleId);
       if (!existingSale) return;
@@ -1146,9 +1229,33 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                 >
                   <option value="all">전체 월필터</option>
                   {uniqueMonths.map(m => (
-                    <option key={m} value={m}>{m.replace('-', '년 ')}월</option>
+                    <option key={m} value={m}>{m.replace('-', '년 ')}월{lockedMonths.includes(m) ? ' 🔒' : ''}</option>
                   ))}
                 </select>
+
+                {/* 월 마감(잠금) 토글 - 특정 월 선택 시 */}
+                {ledgerMonthFilter !== 'all' && (
+                  isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleMonthLock(ledgerMonthFilter)}
+                      className={`flex items-center space-x-1.5 px-3 py-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                        lockedMonths.includes(ledgerMonthFilter)
+                          ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                      title="이 월의 정산을 마감/해제합니다 (관리자)"
+                    >
+                      {lockedMonths.includes(ledgerMonthFilter) ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                      <span>{lockedMonths.includes(ledgerMonthFilter) ? '마감 해제' : '월 마감'}</span>
+                    </button>
+                  ) : lockedMonths.includes(ledgerMonthFilter) ? (
+                    <span className="flex items-center space-x-1.5 px-3 py-2 text-xs font-bold rounded-xl bg-rose-50 text-rose-700 border border-rose-200">
+                      <Lock className="h-3.5 w-3.5" />
+                      <span>마감됨</span>
+                    </span>
+                  ) : null
+                )}
               </div>
 
               {/* Action Buttons */}
@@ -1482,7 +1589,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                               <td className="p-1 text-center bg-white">
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteFee(fee.id, `${fee.coachName} - ${fee.customerName}`)}
+                                  onClick={() => handleDeleteFee(fee.id, `${fee.coachName} - ${fee.customerName}`, fee.date)}
                                   className="text-slate-300 hover:text-rose-500 duration-70 p-1 rounded hover:bg-rose-50 cursor-pointer"
                                 >
                                   <Trash2 className="w-4 h-4 mx-auto" />

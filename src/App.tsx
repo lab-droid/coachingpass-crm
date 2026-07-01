@@ -408,7 +408,7 @@ export default function App() {
       case 'coach_fees':
         return <CoachFees sales={visibleSales} user={user!} />;
       case 'sales_fees':
-        return <SalesFees sales={visibleSales} />;
+        return <SalesFees sales={visibleSales} user={user!} />;
       case 'employees':
         return <Employees user={user!} />;
       case 'analytics':

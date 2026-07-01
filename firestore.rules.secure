@@ -1,0 +1,108 @@
+// ============================================================================
+//  코칭패스 CRM — 강화된 Firestore 보안 규칙 (배포 대기용 초안)
+// ============================================================================
+//
+//  ⚠️ 아직 배포하지 마세요. 이 규칙을 그대로 적용하면 현재 "자격증명(이메일/비밀번호)
+//     포털" 로그인 사용자(영업팀·코치·일부 관리자)가 모두 차단됩니다.
+//     현재 자격증명 로그인은 Firebase Auth를 쓰지 않고, 클라이언트에서
+//     user_accounts 컬렉션의 평문 비밀번호를 직접 비교합니다(request.auth = null).
+//
+//  적용 전 필수 선행 작업(마이그레이션):
+//   1) 각 계정을 Firebase Auth(이메일/비밀번호) 사용자로 생성(프로비저닝).
+//      - Firebase Console 또는 Admin SDK 스크립트로 일괄 생성.
+//   2) Login.tsx의 자격증명 로그인을 signInWithEmailAndPassword 로 교체하고,
+//      로그인 성공 후(=인증된 상태) user_accounts에서 역할/employeeId만 조회.
+//      → user_accounts의 평문 password 필드 제거.
+//   3) 관리자 역할 판별을 위해 커스텀 클레임(admin=true) 또는
+//      users/{uid} 프로필 문서(role) 중 하나를 사용하도록 통일.
+//   4) 스테이징에서 모든 로그인 경로(구글/자격증명)와 읽기/쓰기 검증 후 배포:
+//      firebase deploy --only firestore:rules
+//
+//  아래 예시는 "users/{uid}.role" 프로필 문서로 역할을 판별하는 방식입니다.
+// ============================================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // users/{uid} 문서에 role 필드가 있다고 가정 (예: 'admin' | '영업팀' | '코치')
+    function userRole() {
+      return isSignedIn()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+
+    function isAdmin() {
+      // 커스텀 클레임 또는 프로필 role 중 하나로 관리자 판별
+      return isSignedIn() && (request.auth.token.admin == true || userRole() == 'admin');
+    }
+
+    // 로그인한 사용자는 업무 데이터 조회 가능, 쓰기는 로그인 사용자 허용(세분화는 필요 시 강화)
+    match /sales/{saleId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    match /coaches/{coachId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // 요율표 수정은 관리자만
+    match /coachTariffs/{tariffId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /coach_fees/{feeId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /sales_fees/{feeId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // 인사/급여 정보 — 조회는 로그인, 수정은 관리자만
+    match /employees/{employeeId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // 시스템 설정·월마감 — 관리자만 수정
+    match /settings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    match /settlement_locks/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // 계정 정보 — 관리자만 (평문 비밀번호 필드는 제거 전제)
+    match /user_accounts/{accountId} {
+      allow read, write: if isAdmin();
+    }
+
+    // 프로필 — 본인/관리자만 조회, 역할 변경은 관리자만
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    // 감사 로그 — append-only(생성만). 수정/삭제 불가로 변조 방지
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    // 기본 거부
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
