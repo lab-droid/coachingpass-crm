@@ -29,6 +29,7 @@ import { db, handleFirestoreError, OperationType, isQuotaExceeded, writeAuditLog
 import { collection, onSnapshot, setDoc, doc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { COACH_TARIFF_TABLE, CoachTariff } from '../data/coachTariff';
 import SearchableSelect from './SearchableSelect';
+import { getInquiryRate } from '../utils/inquiry';
 
 const getUniqueCoachesFromTariff = (): Coach[] => {
   const uniqueNames = Array.from(new Set(COACH_TARIFF_TABLE.map(t => t.coachName)));
@@ -879,7 +880,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
         
         // Recalculate salesperson fee if it's there
         const inquiryType = existingSale.inquiryType || 'corporate';
-        const rate = inquiryType === 'corporate' ? 10 : 20;
+        const rate = getInquiryRate(inquiryType);
         const baseAmount = amt / 1.1;
         const computedFee = Math.round(baseAmount * (rate / 100));
         updatedFields.fee = computedFee;

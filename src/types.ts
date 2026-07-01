@@ -34,7 +34,7 @@ export interface Sale {
   status: 'pending' | 'completed' | 'hold'; // 정산대기, 정산완료, 정산보류
   holdReason?: string;
   notes?: string;
-  inquiryType?: 'personal' | 'corporate'; // 개인문의, 회사문의
+  inquiryType?: 'personal' | 'corporate' | 'corporate_solution' | 'personal_solution'; // 회사문의/개인문의/회사-솔루션/개인-솔루션
   inquiryDate?: string;
   coachName?: string;
   coachingMethod?: '통합' | '대면' | '비대면' | '대입' | '혼합';
@@ -146,7 +146,7 @@ export interface SalesFeeItem {
   businessTax?: number;
   residentTax?: number;
   netFee?: number;
-  inquiryType?: 'personal' | 'corporate';
+  inquiryType?: 'personal' | 'corporate' | 'corporate_solution' | 'personal_solution';
   coachName?: string;
   product?: string; // 결제품목 (등록 서비스명)
 }

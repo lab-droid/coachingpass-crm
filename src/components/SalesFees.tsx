@@ -30,6 +30,7 @@ import { db, handleFirestoreError, OperationType, writeAuditLog } from '../fireb
 import { collection, onSnapshot, setDoc, doc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { COACH_TARIFF_TABLE } from '../data/coachTariff';
 import SearchableSelect from './SearchableSelect';
+import { getInquiryRate, INQUIRY_OPTIONS, InquiryType } from '../utils/inquiry';
 
 // Excel ROUNDDOWN equivalent helper
 const roundDown = (value: number, digits: number): number => {
@@ -76,7 +77,7 @@ export default function SalesFees(props: SalesFeesProps) {
   const [downloading, setDownloading] = useState<string | null>(null);
 
   // Form Inputs
-  const [newFee, setNewFee] = useState<Partial<SalesFeeItem & { inquiryType?: 'personal' | 'corporate' }>>({
+  const [newFee, setNewFee] = useState<Partial<SalesFeeItem & { inquiryType?: InquiryType }>>({
     managerId: '', customerName: '', salesAmount: 0, commissionRate: 10, status: 'pending', inquiryType: 'corporate'
   });
 
@@ -189,7 +190,7 @@ export default function SalesFees(props: SalesFeesProps) {
         }
 
         const inquiryType = sale.inquiryType || 'corporate';
-        const rate = inquiryType === 'corporate' ? 10 : 20;
+        const rate = getInquiryRate(inquiryType);
         const totalSales = sale.amount || 0;
         
         // 부가세는 총 결제 매출액의 정확히 10%
@@ -237,7 +238,7 @@ export default function SalesFees(props: SalesFeesProps) {
   // Autofill rate on selecting representative or changing inquiry type in manual modal
   useEffect(() => {
     const inquiryType = (newFee as any).inquiryType || 'corporate';
-    const computedRate = inquiryType === 'corporate' ? 10 : 20;
+    const computedRate = getInquiryRate(inquiryType);
     setNewFee(prev => {
       if (prev.commissionRate !== computedRate || prev.inquiryType !== inquiryType) {
         return { ...prev, commissionRate: computedRate, inquiryType };
@@ -363,7 +364,7 @@ export default function SalesFees(props: SalesFeesProps) {
   // Toggle Inquiry Type function
   const handleToggleInquiryType = async (saleId: string, currentType: 'personal' | 'corporate') => {
     const nextType = currentType === 'personal' ? 'corporate' : 'personal';
-    const rate = nextType === 'corporate' ? 10 : 20;
+    const rate = getInquiryRate(nextType);
     try {
       const existingSale = props.sales.find(s => s.id === saleId);
       if (existingSale) {
@@ -408,7 +409,7 @@ export default function SalesFees(props: SalesFeesProps) {
     if (!selected) return;
 
     const inquiryType = (newFee as any).inquiryType || 'corporate';
-    const rate = inquiryType === 'corporate' ? 10 : 20;
+    const rate = getInquiryRate(inquiryType);
     const salesAmt = Number(newFee.salesAmount) || 0;
     
     const vat = Math.round(salesAmt * 0.1);
@@ -529,7 +530,7 @@ export default function SalesFees(props: SalesFeesProps) {
       if (fieldName === 'amount' || fieldName === 'inquiryType') {
         const docAmount = fieldName === 'amount' ? Number(value) : (existingSale.amount || 0);
         const docType = fieldName === 'inquiryType' ? value : (existingSale.inquiryType || 'corporate');
-        const rate = docType === 'corporate' ? 10 : 20;
+        const rate = getInquiryRate(docType);
         
         const vat = Math.round(docAmount * 0.1);
         const supplyPrice = docAmount - vat;
@@ -1154,13 +1155,14 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                                 value={fee.inquiryType || 'corporate'}
                                 onChange={(e) => updateSaleProperty(fee.id, 'inquiryType', e.target.value)}
                                 className={`w-full text-xs font-bold border-0 outline-none bg-transparent cursor-pointer p-1 rounded transition-colors text-center ${
-                                  fee.inquiryType === 'corporate' 
-                                    ? 'text-blue-750 font-extrabold' 
+                                  (fee.inquiryType || 'corporate').startsWith('corporate')
+                                    ? 'text-blue-750 font-extrabold'
                                     : 'text-emerald-750 font-extrabold'
                                 }`}
                               >
-                                <option value="corporate">🏢 회사문의 (10%)</option>
-                                <option value="personal">👤 개인문의 (20%)</option>
+                                {INQUIRY_OPTIONS.map(o => (
+                                  <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
                               </select>
                             </td>
 
@@ -1304,8 +1306,9 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                       onChange={e => setNewFee({...newFee, inquiryType: e.target.value as any})}
                       className="w-full border p-2.5 rounded-xl font-bold bg-white"
                     >
-                      <option value="corporate">🏢 회사문의 (10%)</option>
-                      <option value="personal">👤 개인문의 (20%)</option>
+                      {INQUIRY_OPTIONS.map(o => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
                     </select>
                   </div>
                 </div>

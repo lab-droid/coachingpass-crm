@@ -26,6 +26,7 @@ import { Sale, CommissionSummary } from '../types';
 import { db } from '../firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { MANAGERS } from '../data/mockData';
+import { getInquiryRate, getInquiryLabel, INQUIRY_OPTIONS } from '../utils/inquiry';
 
 // Excel ROUNDDOWN equivalent helper
 const roundDown = (value: number, digits: number): number => {
@@ -208,7 +209,7 @@ export default function Settlement(props: SettlementProps) {
         if (fieldName === 'amount') {
           const amt = Number(value) || 0;
           const inquiryType = sale.inquiryType || 'corporate'; // Default corporate per user rules
-          const rate = inquiryType === 'corporate' ? 10 : 20;
+          const rate = getInquiryRate(inquiryType);
           const vat = Math.round(amt * 0.1);
           const supplyPrice = amt - vat;
           const commission = Math.round(supplyPrice * (rate / 100));
@@ -222,8 +223,8 @@ export default function Settlement(props: SettlementProps) {
 
         // Auto recalculation on inquiryType (DB유입) alteration
         if (fieldName === 'inquiryType') {
-          const type = value as 'personal' | 'corporate';
-          const rate = type === 'corporate' ? 10 : 20;
+          const type = value as any;
+          const rate = getInquiryRate(type);
           const amt = sale.amount || 0;
           const vat = Math.round(amt * 0.1);
           const supplyPrice = amt - vat;
@@ -342,7 +343,7 @@ export default function Settlement(props: SettlementProps) {
       .map(sale => {
         const inqDay = sale.inquiryDate || getFallbackInquiryDate(sale.date);
         const student = sale.customerName || '미지정';
-        const dbLead = sale.inquiryType === 'corporate' ? '회사문의(10%)' : '개인문의(20%)';
+        const dbLead = getInquiryLabel(sale.inquiryType);
         const manager = getMatchingManagerName(sale.managerName);
         const coach = sale.coachName || '없음';
         const service = sale.registeredService || sale.imwebData?.items?.[0]?.name || '컨설팅 및 교육';
@@ -605,8 +606,9 @@ export default function Settlement(props: SettlementProps) {
                     className="bg-transparent text-xs font-bold font-sans text-white focus:outline-none pr-2 py-1.5 cursor-pointer"
                   >
                     <option value="all" className="bg-slate-800">전체유입</option>
-                    <option value="corporate" className="bg-slate-800">회사문의 (10%)</option>
-                    <option value="personal" className="bg-slate-800">개인문의 (20%)</option>
+                    {INQUIRY_OPTIONS.map(o => (
+                      <option key={o.value} value={o.value} className="bg-slate-800">{o.short}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -723,13 +725,14 @@ export default function Settlement(props: SettlementProps) {
                                 value={defaultInquiryType}
                                 onChange={(e) => updateSaleField(sale.id, 'inquiryType', e.target.value)}
                                 className={`w-full text-xs font-bold border-0 outline-none bg-transparent cursor-pointer p-1 rounded transition-colors ${
-                                  defaultInquiryType === 'corporate' 
-                                    ? 'text-blue-700' 
+                                  (defaultInquiryType || 'corporate').startsWith('corporate')
+                                    ? 'text-blue-700'
                                     : 'text-emerald-700'
                                 }`}
                               >
-                                <option value="corporate">🏢 회사문의 (10%)</option>
-                                <option value="personal">👤 개인문의 (20%)</option>
+                                {INQUIRY_OPTIONS.map(o => (
+                                  <option key={o.value} value={o.value}>{o.label}</option>
+                                ))}
                               </select>
                             </td>
 

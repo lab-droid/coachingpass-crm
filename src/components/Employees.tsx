@@ -25,7 +25,8 @@ import {
   Eye,
   EyeOff,
   KeyRound,
-  RefreshCw
+  RefreshCw,
+  Copy
 } from 'lucide-react';
 import { Employee, User } from '../types';
 import { db, handleFirestoreError, OperationType, isQuotaExceeded } from '../firebase';
@@ -703,6 +704,16 @@ export default function Employees({ user }: EmployeesProps) {
     setTimeout(() => setSuccessToast(null), 3000);
   };
 
+  const copyToClipboard = async (text: string, label: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(`${label} 복사됨: ${text}`);
+    } catch {
+      showToast('클립보드 복사에 실패했습니다.');
+    }
+  };
+
   // Safe decimal conversions and formatting
   const formatKrw = (value?: number) => {
     if (!value) return '₩0';
@@ -988,7 +999,6 @@ export default function Employees({ user }: EmployeesProps) {
                 {isAdmin && <th className="px-6 py-3.5">초기 비밀번호 (관리자 전용)</th>}
                 <th className="px-6 py-3.5">소속 부서 / 직무</th>
                 <th className="px-6 py-3.5">연락처 / 이메일</th>
-                <th className="px-6 py-3.5">수수료 (코치) / 수수료율 (영업)</th>
                 <th className="px-6 py-3.5">입사일자</th>
                 <th className="px-6 py-3.5">재직여부</th>
                 <th className="px-6 py-3.5 text-right">조작</th>
@@ -999,7 +1009,19 @@ export default function Employees({ user }: EmployeesProps) {
                 filteredEmployees.map((emp) => (
                   <tr key={emp.id} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-6 py-4.5 border-b border-slate-100">
-                      <span className="font-mono font-bold text-slate-700 text-xs bg-slate-100 px-2 py-1 rounded-md">{emp.employeeNumber || '-'}</span>
+                      <div className="flex items-center space-x-1.5">
+                        <span className="font-mono font-bold text-slate-700 text-xs bg-slate-100 px-2 py-1 rounded-md">{emp.employeeNumber || '-'}</span>
+                        {emp.employeeNumber && (
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(emp.employeeNumber!, '사번')}
+                            className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 cursor-pointer transition-colors"
+                            title="사번 복사"
+                          >
+                            <Copy className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4.5 font-semibold text-slate-900 border-b border-slate-100">
                       <div className="flex items-center space-x-2.5">
@@ -1022,6 +1044,16 @@ export default function Employees({ user }: EmployeesProps) {
                           >
                             {showPwMap[emp.id] ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
                           </button>
+                          {emp.initialPassword && (
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(emp.initialPassword!, '초기 비밀번호')}
+                              className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 cursor-pointer transition-colors"
+                              title="초기 비밀번호 복사"
+                            >
+                              <Copy className="h-3 w-3" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     )}
@@ -1052,21 +1084,6 @@ export default function Employees({ user }: EmployeesProps) {
                           <span>{emp.phone}</span>
                         </span>
                       </div>
-                    </td>
-                    <td className="px-6 py-4.5 border-b border-slate-100 text-slate-700 hover:text-slate-900">
-                      {emp.role === '코치' ? (
-                        <div className="flex flex-col">
-                          <span className="font-bold text-blue-600 font-mono text-sm">{formatKrw(emp.coachingFee || 150500)}</span>
-                          <span className="text-[10px] text-slate-400 font-sans tracking-tight">수수료 (원화)</span>
-                        </div>
-                      ) : emp.role === '영업팀' ? (
-                        <div className="flex flex-col">
-                          <span className="font-bold text-amber-600 font-mono text-sm">{emp.commissionRate || 10}%</span>
-                          <span className="text-[10px] text-slate-400 font-sans tracking-tight">수수료율</span>
-                        </div>
-                      ) : (
-                        <span className="text-slate-300 font-mono">-</span>
-                      )}
                     </td>
                     <td className="px-6 py-4.5 border-b border-slate-100 font-mono text-slate-500">
                       <span className="flex items-center space-x-1">
@@ -1108,7 +1125,7 @@ export default function Employees({ user }: EmployeesProps) {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={isAdmin ? 9 : 8} className="py-20 text-center text-slate-400 font-sans">
+                  <td colSpan={isAdmin ? 8 : 7} className="py-20 text-center text-slate-400 font-sans">
                     <Users className="h-10 w-10 text-slate-200 mx-auto mb-3" />
                     인사 필터링 조건에 부합하는 임직원이 존재하지 않습니다.
                   </td>
@@ -1280,36 +1297,6 @@ export default function Employees({ user }: EmployeesProps) {
                     </select>
                   </div>
                 </div>
-
-                {currentEmployee?.role === '코치' ? (
-                  <div>
-                    <label className="block text-blue-650 font-extrabold text-[10px] uppercase mb-1">수수료 (원화 KRW) <strong className="text-rose-500">*</strong></label>
-                    <input
-                      type="number"
-                      required
-                      disabled={!isAdmin}
-                      value={currentEmployee?.coachingFee || 0}
-                      onChange={(e) => setCurrentEmployee({ ...currentEmployee, coachingFee: Number(e.target.value) })}
-                      placeholder="예. 150000"
-                      className="w-full px-3.5 py-2.5 text-xs border border-blue-200 bg-blue-50/15 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-blue-500 transition-all font-bold font-mono"
-                    />
-                  </div>
-                ) : currentEmployee?.role === '영업팀' ? (
-                  <div>
-                    <label className="block text-amber-650 font-extrabold text-[10px] uppercase mb-1">수수료율 (%) <strong className="text-rose-500">*</strong></label>
-                    <input
-                      type="number"
-                      required
-                      disabled={!isAdmin}
-                      min="0"
-                      max="100"
-                      value={currentEmployee?.commissionRate || 0}
-                      onChange={(e) => setCurrentEmployee({ ...currentEmployee, commissionRate: Number(e.target.value) })}
-                      placeholder="예. 15"
-                      className="w-full px-3.5 py-2.5 text-xs border border-amber-200 bg-amber-50/15 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-amber-500 transition-all font-bold font-mono"
-                    />
-                  </div>
-                ) : null}
 
                 <div>
                   <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">입사일자</label>

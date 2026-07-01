@@ -16,6 +16,7 @@ import {
   DownloadCloud
 } from 'lucide-react';
 import { Sale, SystemSettings, User } from '../types';
+import { getInquiryRate, INQUIRY_OPTIONS } from '../utils/inquiry';
 import { db } from '../firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { STATIC_SALES_MANAGERS } from './SalesFees';
@@ -70,11 +71,11 @@ export default function SalesManagement(props: SalesManagementProps) {
     return STATIC_SALES_MANAGERS.map(m => m.name);
   }, [employees]);
 
-  const handleToggleInquiryType = (saleId: string, currentType: 'personal' | 'corporate') => {
-    const nextType = currentType === 'personal' ? 'corporate' : 'personal';
+  const handleToggleInquiryType = (saleId: string, currentType: string) => {
+    const nextType: 'personal' | 'corporate' = currentType.startsWith('corporate') ? 'personal' : 'corporate';
     props.setSales(prev => prev.map(s => {
       if (s.id === saleId) {
-        const rate = nextType === 'corporate' ? 10 : 20;
+        const rate = getInquiryRate(nextType);
         const amt = s.amount || 0;
         const vat = Math.round(amt * 0.1);
         const supplyPrice = amt - vat;
@@ -99,7 +100,7 @@ export default function SalesManagement(props: SalesManagementProps) {
     const updatedSales = props.sales.map(s => {
       if (s.id === saleId) {
         const inquiryType = s.inquiryType || 'corporate';
-        const rate = inquiryType === 'corporate' ? 10 : 20;
+        const rate = getInquiryRate(inquiryType);
         const amt = s.amount || 0;
         const vat = Math.round(amt * 0.1);
         const supplyPrice = amt - vat;
@@ -477,13 +478,13 @@ export default function SalesManagement(props: SalesManagementProps) {
                             handleToggleInquiryType(sale.id, sale.inquiryType || 'corporate');
                           }}
                           className={`inline-flex items-center space-x-1.5 px-3 py-1 font-extrabold text-xs rounded-full border cursor-pointer transition-all ${
-                            (sale.inquiryType || 'corporate') === 'corporate'
+                            (sale.inquiryType || 'corporate').startsWith('corporate')
                               ? 'bg-blue-50/80 text-blue-700 border-blue-200 hover:bg-blue-100'
                               : 'bg-emerald-50/80 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                           }`}
-                          title="클릭하여 문의 유형 변경 (개인문의 20% ↔ 회사문의 10%)"
+                          title="클릭하여 문의 유형(회사문의/개인문의) 변경"
                         >
-                          <span>{(sale.inquiryType || 'corporate') === 'corporate' ? '🏢 회사문의 (10%)' : '👤 개인문의 (20%)'}</span>
+                          <span>{(INQUIRY_OPTIONS.find(o => o.value === (sale.inquiryType || 'corporate'))?.label) || '🏢 회사문의 (10%)'}</span>
                         </button>
                       </td>
                       <td className="py-4 px-4 text-center">
