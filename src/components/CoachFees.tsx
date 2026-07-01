@@ -90,6 +90,9 @@ export default function CoachFees(props: CoachFeesProps) {
   const [ledgerManagerFilter, setLedgerManagerFilter] = useState('all');
   const [ledgerMonthFilter, setLedgerMonthFilter] = useState('all');
 
+  // Bulk settlement selection
+  const [selectedFeeIds, setSelectedFeeIds] = useState<Set<string>>(new Set());
+
   // New item inputs
   const [newCoach, setNewCoach] = useState<Partial<Coach>>({
     name: '', email: '', phone: '', specialty: '', tier: 'A', status: 'active'
@@ -410,6 +413,77 @@ export default function CoachFees(props: CoachFeesProps) {
     const months = coachFees.map(f => f.date.substring(0, 7));
     return Array.from(new Set(months)).sort((a, b) => b.localeCompare(a));
   }, [coachFees]);
+
+  // Filtered + sorted ledger rows (shared by the table, bulk actions and reports)
+  const filteredLedgerFees = React.useMemo(() => {
+    return coachFees.filter(fee => {
+      const matchesSearch =
+        fee.customerName.toLowerCase().includes(ledgerSearchQuery.toLowerCase()) ||
+        fee.coachName.toLowerCase().includes(ledgerSearchQuery.toLowerCase()) ||
+        (fee.managerName || '').toLowerCase().includes(ledgerSearchQuery.toLowerCase());
+
+      const matchesCoach = ledgerCoachFilter === 'all' || fee.coachName === ledgerCoachFilter;
+      const matchesStatus = ledgerStatusFilter === 'all' || fee.status === ledgerStatusFilter;
+      const matchesManager = ledgerManagerFilter === 'all' || fee.managerName === ledgerManagerFilter;
+      const matchesMonth = ledgerMonthFilter === 'all' || fee.date.startsWith(ledgerMonthFilter);
+
+      return matchesSearch && matchesCoach && matchesStatus && matchesManager && matchesMonth;
+    }).sort((a, b) => b.date.localeCompare(a.date)); // 최신 날짜가 위, 오래된 순으로 정렬
+  }, [coachFees, ledgerSearchQuery, ledgerCoachFilter, ledgerStatusFilter, ledgerManagerFilter, ledgerMonthFilter]);
+
+  // Whether the ledger is currently narrowed by any filter
+  const isLedgerFiltered =
+    ledgerSearchQuery.trim() !== '' ||
+    ledgerCoachFilter !== 'all' ||
+    ledgerStatusFilter !== 'all' ||
+    ledgerManagerFilter !== 'all' ||
+    ledgerMonthFilter !== 'all';
+
+  // Bulk mark a set of fee rows as 정산완료 (settled) — writes to the shared sales records
+  const handleBulkCompleteFees = async (items: CoachFeeItem[], label: string) => {
+    const targets = items.filter(i => i.status !== 'completed');
+    if (targets.length === 0) {
+      showToast('이미 모두 정산완료 상태이거나 대상이 없습니다.');
+      return;
+    }
+    if (!confirm(`${label} ${targets.length}건을 일괄 정산완료 처리하시겠습니까?`)) return;
+
+    const ids = new Set(targets.map(i => i.id));
+    try {
+      if (props.setSales) {
+        props.setSales(prev => prev.map(s => ids.has(s.id) ? { ...s, status: 'completed', holdReason: '' } : s));
+      } else {
+        await Promise.all(
+          Array.from(ids).map(id => setDoc(doc(db, 'sales', id), { status: 'completed', holdReason: '' }, { merge: true }))
+        );
+      }
+      setSelectedFeeIds(new Set());
+      showToast(`${targets.length}건이 일괄 정산완료 처리되었습니다.`);
+    } catch (e) {
+      console.error("Bulk complete failed:", e);
+      alert('일괄 정산 처리 중 오류가 발생했습니다.');
+    }
+  };
+
+  // Checkbox helpers
+  const toggleFeeSelection = (id: string) => {
+    setSelectedFeeIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectedFees = filteredLedgerFees.filter(f => selectedFeeIds.has(f.id));
+  const allFilteredSelected = filteredLedgerFees.length > 0 && filteredLedgerFees.every(f => selectedFeeIds.has(f.id));
+
+  const toggleSelectAllFiltered = () => {
+    if (allFilteredSelected) {
+      setSelectedFeeIds(new Set());
+    } else {
+      setSelectedFeeIds(new Set(filteredLedgerFees.map(f => f.id)));
+    }
+  };
 
   // Active filter for coach list detail view
   const activeCoach = selectedCoachId ? coaches.find(c => c.id === selectedCoachId) : null;
@@ -1078,7 +1152,27 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
               </div>
 
               {/* Action Buttons */}
-              <div className="flex items-center space-x-2.5">
+              <div className="flex items-center flex-wrap gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => handleBulkCompleteFees(selectedFees, '선택한')}
+                  disabled={selectedFees.length === 0}
+                  className="flex items-center justify-center space-x-2 bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition duration-75 shadow-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <CheckCircle className="h-4 w-4" />
+                  <span>선택 정산완료{selectedFees.length > 0 ? ` (${selectedFees.length})` : ''}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleBulkCompleteFees(filteredLedgerFees, isLedgerFiltered ? '필터된' : '전체')}
+                  disabled={filteredLedgerFees.length === 0}
+                  className="flex items-center justify-center space-x-2 bg-teal-600 hover:bg-teal-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition duration-75 shadow-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <CheckCircle className="h-4 w-4" />
+                  <span>{isLedgerFiltered ? '필터' : '전체'} 일괄 정산완료 ({filteredLedgerFees.length})</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={handleAddNewRow}
@@ -1127,6 +1221,15 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                 <table className="w-full text-left border-collapse bg-white text-sm">
                   <thead>
                     <tr className="bg-slate-100 text-slate-600 border-b border-slate-200 text-xs font-bold uppercase tracking-wider sticky top-0 z-10">
+                      <th className="p-3 border-r border-slate-200 text-center w-10">
+                        <input
+                          type="checkbox"
+                          checked={allFilteredSelected}
+                          onChange={toggleSelectAllFiltered}
+                          className="h-3.5 w-3.5 accent-emerald-600 cursor-pointer align-middle"
+                          title="필터된 전체 선택/해제"
+                        />
+                      </th>
                       <th className="p-3 border-r border-slate-200 min-w-[130px]">담당코치</th>
                       <th className="p-3 border-r border-slate-200 min-w-[110px]">코칭방식</th>
                       <th className="p-3 border-r border-slate-200 min-w-[140px]">수강생명</th>
@@ -1142,24 +1245,12 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                   <tbody>
                     {/* Computed helper array for the spreadsheet view */}
                     {(() => {
-                      const list = coachFees.filter(fee => {
-                        const matchesSearch = 
-                          fee.customerName.toLowerCase().includes(ledgerSearchQuery.toLowerCase()) ||
-                          fee.coachName.toLowerCase().includes(ledgerSearchQuery.toLowerCase()) ||
-                          (fee.managerName || '').toLowerCase().includes(ledgerSearchQuery.toLowerCase());
-                          
-                        const matchesCoach = ledgerCoachFilter === 'all' || fee.coachName === ledgerCoachFilter;
-                        const matchesStatus = ledgerStatusFilter === 'all' || fee.status === ledgerStatusFilter;
-                        const matchesManager = ledgerManagerFilter === 'all' || fee.managerName === ledgerManagerFilter;
-                        const matchesMonth = ledgerMonthFilter === 'all' || fee.date.startsWith(ledgerMonthFilter);
-
-                        return matchesSearch && matchesCoach && matchesStatus && matchesManager && matchesMonth;
-                      }).sort((a, b) => b.date.localeCompare(a.date)); // 최신 날짜가 위, 오래된 순으로 정렬
+                      const list = filteredLedgerFees;
 
                       if (list.length === 0) {
                         return (
                           <tr>
-                            <td colSpan={10} className="p-20 text-center text-slate-400 font-sans">
+                            <td colSpan={11} className="p-20 text-center text-slate-400 font-sans">
                               <Award className="h-10 w-10 text-slate-300 mx-auto mb-3" />
                               스프레드시트에 일치하는 수수료 정산 데이터가 없습니다.
                             </td>
@@ -1175,7 +1266,16 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                       return (
                         <>
                           {list.map((fee) => (
-                            <tr key={fee.id} className="hover:bg-slate-50/50 border-b border-slate-200 duration-75">
+                            <tr key={fee.id} className={`hover:bg-slate-50/50 border-b border-slate-200 duration-75 ${selectedFeeIds.has(fee.id) ? 'bg-emerald-50/40' : ''}`}>
+                              {/* 0. 선택 체크박스 */}
+                              <td className="p-1 border-r border-slate-200 bg-white text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedFeeIds.has(fee.id)}
+                                  onChange={() => toggleFeeSelection(fee.id)}
+                                  className="h-3.5 w-3.5 accent-emerald-600 cursor-pointer align-middle"
+                                />
+                              </td>
                               {/* 1. 담당코치 */}
                               <td className="p-1 border-r border-slate-200 bg-white">
                                 <select
@@ -1393,6 +1493,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
 
                           {/* Excel-style calculations Summary Footer Row */}
                           <tr className="bg-emerald-50/50 border-t-2 border-emerald-500 font-bold block-table-row text-slate-900 text-xs">
+                            <td className="p-3 border-r border-slate-200 text-center text-slate-400">-</td>
                             <td className="p-3 border-r border-slate-200 text-center text-emerald-800 font-bold">계 (Total Sum)</td>
                             <td className="p-3 border-r border-slate-200 text-slate-400 text-center">-</td>
                             <td className="p-3 border-r border-slate-200 text-slate-400 text-center">-</td>

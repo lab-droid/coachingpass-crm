@@ -59,7 +59,10 @@ export default function SalesFees(props: SalesFeesProps) {
   const [monthFilter, setMonthFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [coachFilter, setCoachFilter] = useState('all');
-  
+
+  // Bulk settlement selection
+  const [selectedSalesIds, setSelectedSalesIds] = useState<Set<string>>(new Set());
+
   // Modals status
   const [isFeeModalOpen, setIsFeeModalOpen] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
@@ -232,6 +235,59 @@ export default function SalesFees(props: SalesFeesProps) {
       return matchesSearch && matchesStatus && matchesMonth && matchesCoach;
     }).sort((a, b) => b.date.localeCompare(a.date)); // 최신 날짜가 위, 오래된 순으로 정렬
   }, [activeManagerFees, searchQuery, statusFilter, monthFilter, coachFilter]);
+
+  // Whether the ledger is currently narrowed by any filter (incl. left-panel manager selection)
+  const isSalesFiltered =
+    selectedManagerName !== null ||
+    searchQuery.trim() !== '' ||
+    statusFilter !== 'all' ||
+    monthFilter !== 'all' ||
+    coachFilter !== 'all';
+
+  // Bulk mark a set of sales-fee rows as 정산완료 — writes to the shared sales records
+  const handleBulkCompleteSales = async (items: SalesFeeItem[], label: string) => {
+    const targets = items.filter(i => i.status !== 'completed');
+    if (targets.length === 0) {
+      showToast('이미 모두 정산완료 상태이거나 대상이 없습니다.');
+      return;
+    }
+    if (!confirm(`${label} ${targets.length}건을 일괄 정산완료 처리하시겠습니까?`)) return;
+
+    const ids = new Set(targets.map(i => i.salesId || i.id));
+    try {
+      if (props.setSales) {
+        props.setSales(prev => prev.map(s => ids.has(s.id) ? { ...s, status: 'completed', holdReason: '' } : s));
+      } else {
+        await Promise.all(
+          Array.from(ids).map(id => setDoc(doc(db, 'sales', id), { status: 'completed', holdReason: '' }, { merge: true }))
+        );
+      }
+      setSelectedSalesIds(new Set());
+      showToast(`${targets.length}건이 일괄 정산완료 처리되었습니다.`);
+    } catch (e) {
+      console.error("Bulk complete failed:", e);
+      alert('일괄 정산 처리 중 오류가 발생했습니다.');
+    }
+  };
+
+  const toggleSalesSelection = (id: string) => {
+    setSelectedSalesIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectedSalesFees = filteredManagerFees.filter(f => selectedSalesIds.has(f.id));
+  const allSalesFilteredSelected = filteredManagerFees.length > 0 && filteredManagerFees.every(f => selectedSalesIds.has(f.id));
+
+  const toggleSelectAllSalesFiltered = () => {
+    if (allSalesFilteredSelected) {
+      setSelectedSalesIds(new Set());
+    } else {
+      setSelectedSalesIds(new Set(filteredManagerFees.map(f => f.id)));
+    }
+  };
 
   // Toggle Inquiry Type function
   const handleToggleInquiryType = async (saleId: string, currentType: 'personal' | 'corporate') => {
@@ -801,6 +857,28 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                   ))}
                 </select>
               </div>
+
+              {/* Bulk settlement actions */}
+              <div className="flex items-center flex-wrap gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleBulkCompleteSales(selectedSalesFees, '선택한')}
+                  disabled={selectedSalesFees.length === 0}
+                  className="flex items-center justify-center space-x-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl py-1.5 px-3 text-xs font-bold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  <span>선택 정산완료{selectedSalesFees.length > 0 ? ` (${selectedSalesFees.length})` : ''}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleBulkCompleteSales(filteredManagerFees, isSalesFiltered ? '필터된' : '전체')}
+                  disabled={filteredManagerFees.length === 0}
+                  className="flex items-center justify-center space-x-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl py-1.5 px-3 text-xs font-bold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  <span>{isSalesFiltered ? '필터' : '전체'} 일괄 정산완료 ({filteredManagerFees.length})</span>
+                </button>
+              </div>
             </div>
 
             {/* Spreadsheet Grid list */}
@@ -810,6 +888,15 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                   <thead>
                     {/* Visual Sheets Coordinate alphabet row */}
                     <tr className="bg-slate-50 border-b border-slate-200/80 font-mono text-[9px] text-slate-400 font-bold tracking-widest text-center select-none">
+                      <th className="w-9 border-r border-slate-200 p-1">
+                        <input
+                          type="checkbox"
+                          checked={allSalesFilteredSelected}
+                          onChange={toggleSelectAllSalesFiltered}
+                          className="h-3.5 w-3.5 accent-emerald-600 cursor-pointer align-middle"
+                          title="필터된 전체 선택/해제"
+                        />
+                      </th>
                       <th className="w-10 border-r border-slate-200 p-1">#</th>
                       <th className="w-40 border-r border-slate-200 p-1">A (결제일)</th>
                       <th className="w-32 border-r border-slate-200 p-1">B (수강생 이름)</th>
@@ -828,6 +915,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                     </tr>
                     {/* Natural Row headers with descriptive details */}
                     <tr className="bg-slate-100/80 border-b border-slate-200/80 text-[10px] text-slate-650 font-bold text-center">
+                      <td className="p-2 border-r border-slate-200 font-mono">✓</td>
                       <td className="p-2 border-r border-slate-200 font-mono">Row</td>
                       <td className="p-2 border-r border-slate-400">결제 완료일</td>
                       <td className="p-2 border-r border-slate-400">수강생 명세</td>
@@ -850,16 +938,28 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                       filteredManagerFees.map((fee, idx) => {
                         const rowNum = idx + 1;
                         return (
-                          <tr 
+                          <tr
                             key={fee.id}
                             className={`border-b border-slate-200 font-sans hover:bg-slate-50/60 transition-all ${
-                              fee.status === 'completed' 
+                              selectedSalesIds.has(fee.id)
+                                ? 'bg-emerald-50/50'
+                                : fee.status === 'completed'
                                 ? 'bg-emerald-50/15'
                                 : fee.status === 'hold'
                                 ? 'bg-rose-50/15'
                                 : 'bg-amber-50/15'
                             }`}
                           >
+                            {/* Selection checkbox */}
+                            <td className="border-r border-slate-200 bg-slate-50/80 p-1 text-center">
+                              <input
+                                type="checkbox"
+                                checked={selectedSalesIds.has(fee.id)}
+                                onChange={() => toggleSalesSelection(fee.id)}
+                                className="h-3.5 w-3.5 accent-emerald-600 cursor-pointer align-middle"
+                              />
+                            </td>
+
                             {/* Row Indicator */}
                             <td className="border-r border-slate-200 bg-slate-50/80 p-2 font-mono text-[9px] text-slate-400 text-center font-bold select-none">
                               {rowNum}
@@ -1022,7 +1122,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                       })
                     ) : (
                       <tr>
-                        <td colSpan={15} className="py-20 text-center text-slate-400 font-sans">
+                        <td colSpan={16} className="py-20 text-center text-slate-400 font-sans">
                           <Percent className="h-10 w-10 text-slate-200 mx-auto mb-3" />
                           일치하는 영업 지출 수수료 정산 명세가 지출 장부에 존재하지 않습니다.
                         </td>
