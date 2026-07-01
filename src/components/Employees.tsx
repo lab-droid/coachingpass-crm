@@ -20,9 +20,8 @@ import {
   XCircle, 
   DollarSign, 
   TrendingUp, 
-  ChevronDown, 
-  X,
-  Target
+  ChevronDown,
+  X
 } from 'lucide-react';
 import { Employee, User } from '../types';
 import { db, handleFirestoreError, OperationType, isQuotaExceeded } from '../firebase';
@@ -691,7 +690,6 @@ export default function Employees({ user }: EmployeesProps) {
   const totalCount = employees.length;
   const activeCount = employees.filter(e => e.status === 'active').length;
   const inactiveCount = employees.filter(e => e.status === 'inactive').length;
-  const totalSalesTargets = employees.reduce((sum, e) => sum + (e.salesTarget || 0), 0);
 
   // Save or Update Employee
   const handleSaveEmployee = async (e: React.FormEvent) => {
@@ -818,7 +816,7 @@ export default function Employees({ user }: EmployeesProps) {
         <div>
           <h1 className="text-2xl font-black text-slate-900 tracking-tight">임직원 인사 정보 관리</h1>
           <p className="text-sm text-slate-500 mt-1">
-            코칭 패스의 모든 임원, 관리자, 코치 및 영업 담당자의 인적 사항과 목표 매출 및 조직 부서를 체계적으로 기록합니다.
+            코칭 패스의 모든 임원, 관리자, 코치 및 영업 담당자의 인적 사항과 조직 부서를 체계적으로 기록합니다.
           </p>
         </div>
         {isAdmin && (
@@ -833,7 +831,7 @@ export default function Employees({ user }: EmployeesProps) {
       </div>
 
       {/* KPI Stats Panel */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6" id="employee_kpis">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6" id="employee_kpis">
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex items-center space-x-4">
           <div className="h-11 w-11 rounded-xl bg-slate-50 text-slate-600 flex items-center justify-center shrink-0 border border-slate-100">
             <Users className="h-5 w-5" />
@@ -864,15 +862,6 @@ export default function Employees({ user }: EmployeesProps) {
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex items-center space-x-4">
-          <div className="h-11 w-11 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 border border-amber-100">
-            <Target className="h-5 w-5" />
-          </div>
-          <div>
-            <span className="text-xs font-semibold text-slate-400 block tracking-wider">합산 지정 영업 목표</span>
-            <strong className="text-xl font-bold text-slate-800 block mt-0.5 font-mono text-amber-600">{formatKrw(totalSalesTargets)}</strong>
-          </div>
-        </div>
       </div>
 
       {/* Main Grid: Filters & Staff List */}
@@ -942,8 +931,7 @@ export default function Employees({ user }: EmployeesProps) {
                 <th className="px-6 py-3.5">성명</th>
                 <th className="px-6 py-3.5">소속 부서 / 직무</th>
                 <th className="px-6 py-3.5">연락처 / 이메일</th>
-                <th className="px-6 py-3.5">기본급 (일반) / 수수료 (코치)</th>
-                <th className="px-6 py-3.5">목표 매출 (일반) / 수수료율 (영업)</th>
+                <th className="px-6 py-3.5">수수료 (코치) / 수수료율 (영업)</th>
                 <th className="px-6 py-3.5">입사일자</th>
                 <th className="px-6 py-3.5">재직여부</th>
                 <th className="px-6 py-3.5 text-right">조작</th>
@@ -995,24 +983,13 @@ export default function Employees({ user }: EmployeesProps) {
                           <span className="font-bold text-blue-600 font-mono text-sm">{formatKrw(emp.coachingFee || 150500)}</span>
                           <span className="text-[10px] text-slate-400 font-sans tracking-tight">수수료 (원화)</span>
                         </div>
-                      ) : (
-                        <div className="flex flex-col">
-                          <span className="font-semibold text-slate-800 font-mono">{formatKrw(emp.baseSalary)}</span>
-                          <span className="text-[10px] text-slate-400 font-sans tracking-tight">기본급 (월)</span>
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-6 py-4.5 border-b border-slate-100 text-slate-700 hover:text-slate-900">
-                      {emp.role === '영업팀' ? (
+                      ) : emp.role === '영업팀' ? (
                         <div className="flex flex-col">
                           <span className="font-bold text-amber-600 font-mono text-sm">{emp.commissionRate || 10}%</span>
                           <span className="text-[10px] text-slate-400 font-sans tracking-tight">수수료율</span>
                         </div>
                       ) : (
-                        <div className="flex flex-col">
-                          <span className="text-slate-700 font-mono">{formatKrw(emp.salesTarget)}</span>
-                          <span className="text-[10px] text-slate-400 font-sans tracking-tight">목표 매출액</span>
-                        </div>
+                        <span className="text-slate-300 font-mono">-</span>
                       )}
                     </td>
                     <td className="px-6 py-4.5 border-b border-slate-100 font-mono text-slate-500">
@@ -1055,7 +1032,7 @@ export default function Employees({ user }: EmployeesProps) {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={8} className="py-20 text-center text-slate-400 font-sans">
+                  <td colSpan={7} className="py-20 text-center text-slate-400 font-sans">
                     <Users className="h-10 w-10 text-slate-200 mx-auto mb-3" />
                     인사 필터링 조건에 부합하는 임직원이 존재하지 않습니다.
                   </td>
@@ -1194,88 +1171,35 @@ export default function Employees({ user }: EmployeesProps) {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  {currentEmployee?.role === '코치' ? (
-                    <>
-                      <div>
-                        <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">기본급 (월 KRW)</label>
-                        <input
-                          type="number"
-                          disabled={!isAdmin}
-                          value={currentEmployee?.baseSalary || 0}
-                          onChange={(e) => setCurrentEmployee({ ...currentEmployee, baseSalary: Number(e.target.value) })}
-                          placeholder="예. 4000000"
-                          className="w-full px-3.5 py-2.5 text-xs border border-slate-200 bg-slate-50 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-all font-semibold font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-blue-650 font-extrabold text-[10px] uppercase mb-1">수수료 (원화 KRW) <strong className="text-rose-500">*</strong></label>
-                        <input
-                          type="number"
-                          required
-                          disabled={!isAdmin}
-                          value={currentEmployee?.coachingFee || 0}
-                          onChange={(e) => setCurrentEmployee({ ...currentEmployee, coachingFee: Number(e.target.value) })}
-                          placeholder="예. 150000"
-                          className="w-full px-3.5 py-2.5 text-xs border border-blue-200 bg-blue-50/15 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-blue-500 transition-all font-bold font-mono"
-                        />
-                      </div>
-                    </>
-                  ) : currentEmployee?.role === '영업팀' ? (
-                    <>
-                      <div>
-                        <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">기본급 (월 KRW)</label>
-                        <input
-                          type="number"
-                          disabled={!isAdmin}
-                          value={currentEmployee?.baseSalary || 0}
-                          onChange={(e) => setCurrentEmployee({ ...currentEmployee, baseSalary: Number(e.target.value) })}
-                          placeholder="예. 3500000"
-                          className="w-full px-3.5 py-2.5 text-xs border border-slate-200 bg-slate-50 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-all font-semibold font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-amber-650 font-extrabold text-[10px] uppercase mb-1">수수료율 (%) <strong className="text-rose-500">*</strong></label>
-                        <input
-                          type="number"
-                          required
-                          disabled={!isAdmin}
-                          min="0"
-                          max="100"
-                          value={currentEmployee?.commissionRate || 0}
-                          onChange={(e) => setCurrentEmployee({ ...currentEmployee, commissionRate: Number(e.target.value) })}
-                          placeholder="예. 15"
-                          className="w-full px-3.5 py-2.5 text-xs border border-amber-200 bg-amber-50/15 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-amber-500 transition-all font-bold font-mono"
-                        />
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div>
-                        <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">기본급 (월 KRW)</label>
-                        <input
-                          type="number"
-                          disabled={!isAdmin}
-                          value={currentEmployee?.baseSalary || 0}
-                          onChange={(e) => setCurrentEmployee({ ...currentEmployee, baseSalary: Number(e.target.value) })}
-                          placeholder="예. 3000000"
-                          className="w-full px-3.5 py-2.5 text-xs border border-slate-200 bg-slate-50 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-all font-semibold font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">부여 목표 실적액 (KRW)</label>
-                        <input
-                          type="number"
-                          disabled={!isAdmin}
-                          value={currentEmployee?.salesTarget || 0}
-                          onChange={(e) => setCurrentEmployee({ ...currentEmployee, salesTarget: Number(e.target.value) })}
-                          placeholder="예. 50000000"
-                          className="w-full px-3.5 py-2.5 text-xs border border-slate-150 bg-slate-50 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-all font-semibold font-mono"
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
+                {currentEmployee?.role === '코치' ? (
+                  <div>
+                    <label className="block text-blue-650 font-extrabold text-[10px] uppercase mb-1">수수료 (원화 KRW) <strong className="text-rose-500">*</strong></label>
+                    <input
+                      type="number"
+                      required
+                      disabled={!isAdmin}
+                      value={currentEmployee?.coachingFee || 0}
+                      onChange={(e) => setCurrentEmployee({ ...currentEmployee, coachingFee: Number(e.target.value) })}
+                      placeholder="예. 150000"
+                      className="w-full px-3.5 py-2.5 text-xs border border-blue-200 bg-blue-50/15 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-blue-500 transition-all font-bold font-mono"
+                    />
+                  </div>
+                ) : currentEmployee?.role === '영업팀' ? (
+                  <div>
+                    <label className="block text-amber-650 font-extrabold text-[10px] uppercase mb-1">수수료율 (%) <strong className="text-rose-500">*</strong></label>
+                    <input
+                      type="number"
+                      required
+                      disabled={!isAdmin}
+                      min="0"
+                      max="100"
+                      value={currentEmployee?.commissionRate || 0}
+                      onChange={(e) => setCurrentEmployee({ ...currentEmployee, commissionRate: Number(e.target.value) })}
+                      placeholder="예. 15"
+                      className="w-full px-3.5 py-2.5 text-xs border border-amber-200 bg-amber-50/15 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-amber-500 transition-all font-bold font-mono"
+                    />
+                  </div>
+                ) : null}
 
                 <div>
                   <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">입사일자</label>

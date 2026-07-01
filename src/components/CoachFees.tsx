@@ -22,7 +22,7 @@ import {
   X,
   FileText
 } from 'lucide-react';
-import { Coach, CoachFeeItem, Sale } from '../types';
+import { Coach, CoachFeeItem, Sale, User } from '../types';
 import { db, handleFirestoreError, OperationType, isQuotaExceeded } from '../firebase';
 import { collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
 import { COACH_TARIFF_TABLE, CoachTariff } from '../data/coachTariff';
@@ -59,12 +59,16 @@ const DEFAULT_COACH_FEES: CoachFeeItem[] = [
 interface CoachFeesProps {
   sales: Sale[];
   setSales?: (newSalesAction: Sale[] | ((prev: Sale[]) => Sale[])) => void;
+  user?: User;
 }
 
 let coachesSeedAttempted = false;
+let tariffsSeedAttempted = false;
 
 export default function CoachFees(props: CoachFeesProps) {
+  const isAdmin = props.user?.role === 'admin';
   const [coaches, setCoaches] = useState<Coach[]>([]);
+  const [tariffs, setTariffs] = useState<CoachTariff[]>(COACH_TARIFF_TABLE);
   const [selectedCoachId, setSelectedCoachId] = useState<string | null>(null);
   
   // Custom subtabs and rate filter states
@@ -160,13 +164,52 @@ export default function CoachFees(props: CoachFeesProps) {
     };
   }, []);
 
+  // Load coach tariff (요율표) from Firebase, seeding from the static table on first run
+  useEffect(() => {
+    const cached = localStorage.getItem('cached_coach_tariffs');
+    if (cached) {
+      try {
+        setTariffs(JSON.parse(cached));
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    const unsubTariffs = onSnapshot(collection(db, 'coachTariffs'), (snap) => {
+      const dbTariffs = snap.docs.map(d => d.data() as CoachTariff);
+      if (dbTariffs.length === 0) {
+        if (!tariffsSeedAttempted && !isQuotaExceeded()) {
+          tariffsSeedAttempted = true;
+          COACH_TARIFF_TABLE.forEach(async (t) => {
+            try {
+              await setDoc(doc(db, 'coachTariffs', t.id), t);
+            } catch (e) {
+              console.error("Failed to seed tariff:", t.id, e);
+            }
+          });
+        }
+        setTariffs(COACH_TARIFF_TABLE);
+        localStorage.setItem('cached_coach_tariffs', JSON.stringify(COACH_TARIFF_TABLE));
+      } else {
+        const sorted = [...dbTariffs].sort((a, b) => a.coachName.localeCompare(b.coachName));
+        setTariffs(sorted);
+        localStorage.setItem('cached_coach_tariffs', JSON.stringify(sorted));
+      }
+    }, (error) => {
+      console.error("Firestore coachTariffs load error:", error);
+      handleFirestoreError(error, OperationType.GET, 'coachTariffs', false);
+    });
+
+    return () => unsubTariffs();
+  }, []);
+
   // Autofill tier fee rates or tariff amount
   useEffect(() => {
     if (newFee.coachId) {
       const selected = coaches.find(c => c.id === newFee.coachId);
       if (selected) {
         const method = newFee.coachingMethod || '대면';
-        const tariffMatch = COACH_TARIFF_TABLE.find(
+        const tariffMatch = tariffs.find(
           t => t.coachName === selected.name && t.method === method
         );
         const hours = newFee.coachingHours || 1;
@@ -202,7 +245,7 @@ export default function CoachFees(props: CoachFeesProps) {
         }
       }
     }
-  }, [newFee.coachId, newFee.coachingMethod, newFee.coachingHours, newFee.salesAmount, coaches]);
+  }, [newFee.coachId, newFee.coachingMethod, newFee.coachingHours, newFee.salesAmount, coaches, tariffs]);
 
   const showToast = (msg: string) => {
     setSuccessToast(msg);
@@ -223,20 +266,20 @@ export default function CoachFees(props: CoachFeesProps) {
     const salesAmt = salesAmount || 0;
 
     // 1. Try exact coachName and coachingMethod match
-    let tariffMatch = COACH_TARIFF_TABLE.find(
+    let tariffMatch = tariffs.find(
       t => t.coachName === coachName && t.method === coachingMethod
     );
 
     // 2. If not found, try matching '통합'
     if (!tariffMatch && coachingMethod !== '통합') {
-      tariffMatch = COACH_TARIFF_TABLE.find(
+      tariffMatch = tariffs.find(
         t => t.coachName === coachName && t.method === '통합'
       );
     }
 
     // 3. If still not found, try any method match for this coach
     if (!tariffMatch) {
-      tariffMatch = COACH_TARIFF_TABLE.find(
+      tariffMatch = tariffs.find(
         t => t.coachName === coachName
       );
     }
@@ -311,7 +354,7 @@ export default function CoachFees(props: CoachFeesProps) {
           managerName: sale.managerName || ''
         };
       });
-  }, [props.sales, coaches]);
+  }, [props.sales, coaches, tariffs]);
 
   // Calculations
   const grandTotalFees = coachFees.reduce((sum, f) => sum + f.calculatedFee, 0);
@@ -696,8 +739,85 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
     showToast('코칭 정산 스프레드시트가 Excel(.csv) 파일로 완료되었습니다.');
   };
 
+  // Persist a single tariff row to Firestore (omitting empty numeric/text fields)
+  const writeTariff = async (t: CoachTariff) => {
+    if (isQuotaExceeded()) return; // local cache already updated
+    const clean: any = { id: t.id, coachName: t.coachName, method: t.method };
+    if (t.feeAmount !== undefined && !Number.isNaN(t.feeAmount)) clean.feeAmount = t.feeAmount;
+    if (t.feePercent !== undefined && !Number.isNaN(t.feePercent)) clean.feePercent = t.feePercent;
+    if (t.realName) clean.realName = t.realName;
+    if (t.notes) clean.notes = t.notes;
+    try {
+      await setDoc(doc(db, 'coachTariffs', t.id), clean);
+    } catch (e) {
+      console.error("Failed to save tariff:", t.id, e);
+    }
+  };
+
+  // Optimistic local edit of a tariff cell (admin only)
+  const handleTariffChange = (id: string, field: keyof CoachTariff, value: any) => {
+    setTariffs(prev => {
+      const next = prev.map(t => {
+        if (t.id !== id) return t;
+        const updated: CoachTariff = { ...t };
+        if (field === 'feeAmount' || field === 'feePercent') {
+          (updated as any)[field] = value === '' || value === null ? undefined : Number(value);
+        } else {
+          (updated as any)[field] = value;
+        }
+        return updated;
+      });
+      localStorage.setItem('cached_coach_tariffs', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  // Commit the latest state of a tariff row to Firestore
+  const persistTariff = (id: string) => {
+    setTariffs(prev => {
+      const t = prev.find(x => x.id === id);
+      if (t) void writeTariff(t);
+      return prev;
+    });
+  };
+
+  const handleAddTariffRow = async () => {
+    const id = `ct_${Date.now()}`;
+    const item: CoachTariff = { id, coachName: '신규 코치', method: '통합', feeAmount: 50000 };
+    setTariffs(prev => {
+      const next = [...prev, item];
+      localStorage.setItem('cached_coach_tariffs', JSON.stringify(next));
+      return next;
+    });
+    if (!isQuotaExceeded()) {
+      try {
+        await setDoc(doc(db, 'coachTariffs', id), item);
+      } catch (e) {
+        console.error("Failed to add tariff row:", e);
+      }
+    }
+    showToast('신규 요율 항목이 추가되었습니다. 코치명과 수수료를 수정해주세요.');
+  };
+
+  const handleDeleteTariff = async (id: string, name: string) => {
+    if (!confirm(`요율표에서 '${name}' 항목을 삭제하시겠습니까?`)) return;
+    setTariffs(prev => {
+      const next = prev.filter(t => t.id !== id);
+      localStorage.setItem('cached_coach_tariffs', JSON.stringify(next));
+      return next;
+    });
+    if (!isQuotaExceeded()) {
+      try {
+        await deleteDoc(doc(db, 'coachTariffs', id));
+      } catch (e) {
+        console.error("Failed to delete tariff:", e);
+      }
+    }
+    showToast('요율 항목이 삭제되었습니다.');
+  };
+
   // Filtered tariff table
-  const filteredTariff = COACH_TARIFF_TABLE.filter((item) => {
+  const filteredTariff = tariffs.filter((item) => {
     const matchesSearch = 
       item.coachName.toLowerCase().includes(rateSearchQuery.toLowerCase()) || 
       (item.realName && item.realName.toLowerCase().includes(rateSearchQuery.toLowerCase()));
@@ -997,7 +1117,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                                   onChange={(e) => handleCellChange(fee, 'coachName', e.target.value)}
                                   className="w-full bg-transparent p-1.5 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-800 text-xs"
                                 >
-                                  {Array.from(new Set(COACH_TARIFF_TABLE.map(t => t.coachName))).sort().map(name => (
+                                  {Array.from(new Set(tariffs.map(t => t.coachName))).sort().map(name => (
                                     <option key={name} value={name}>{name}</option>
                                   ))}
                                 </select>
@@ -1084,7 +1204,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                                   </div>
                                   {/* 시간당 단가 정보 표시 */}
                                   {(() => {
-                                    const match = COACH_TARIFF_TABLE.find(
+                                    const match = tariffs.find(
                                       t => t.coachName === fee.coachName && t.method === (fee.coachingMethod || '대면')
                                     );
                                     if (match?.feeAmount) {
@@ -1194,7 +1314,12 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-4 mb-5">
               <div>
                 <h3 className="text-base font-bold text-slate-900 tracking-tight">코치별 수수료 기준 요율 조서</h3>
-                <p className="text-xs text-slate-405 mt-0.5 font-sans">매칭 등록 단가와 원천 징수 정산을 제어하는 코칭 방식별 공식 전산 분류 기준표 (이미지 표 완벽 반영)</p>
+                <p className="text-xs text-slate-405 mt-0.5 font-sans">
+                  매칭 등록 단가와 원천 징수 정산을 제어하는 코칭 방식별 공식 전산 분류 기준표
+                  {isAdmin
+                    ? ' — 관리자 권한으로 요율을 직접 수정·추가·삭제할 수 있습니다.'
+                    : ' (조회 전용 · 수정은 관리자만 가능)'}
+                </p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <div className="relative">
@@ -1218,6 +1343,16 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                   <option value="비대면">비대면</option>
                   <option value="대입">대입</option>
                 </select>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={handleAddTariffRow}
+                    className="flex items-center justify-center space-x-1.5 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2 px-3.5 rounded-xl text-xs transition-all cursor-pointer shadow-xs shrink-0"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span>요율 항목 추가</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1227,48 +1362,131 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold font-sans">
                     <th className="p-3 border-r border-slate-200">코치명</th>
                     <th className="p-3 border-r border-slate-200 text-center">코칭방식</th>
-                    <th className="p-3 border-r border-slate-200 text-right">수수료($)</th>
+                    <th className="p-3 border-r border-slate-200 text-right">수수료(원)</th>
                     <th className="p-3 border-r border-slate-200 text-right font-sans">수수료(%)</th>
                     <th className="p-3 border-r border-slate-200 text-center">본명</th>
-                    <th className="p-3">비고</th>
+                    <th className={isAdmin ? 'p-3 border-r border-slate-200' : 'p-3'}>비고</th>
+                    {isAdmin && <th className="p-3 text-center min-w-[50px]">삭제</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-sans">
                   {filteredTariff.length > 0 ? (
                     filteredTariff.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50/70 transition-colors duration-75">
-                        <td className="p-3 font-black text-slate-900 border-r border-slate-200 text-sm whitespace-nowrap">{item.coachName}</td>
-                        <td className="p-3 border-r border-slate-200 text-center whitespace-nowrap">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            item.method === '통합' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100/50' :
-                            item.method === '대면' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100/50' :
-                            item.method === '비대면' ? 'bg-amber-50 text-amber-700 border border-amber-100/50' :
-                            'bg-violet-50 text-violet-700 border border-violet-100/50'
-                          }`}>
-                            {item.method}
-                          </span>
-                        </td>
-                        <td className="p-3 border-r border-slate-200 text-right font-mono font-bold text-slate-700 text-sm whitespace-nowrap">
-                          {item.feeAmount !== undefined ? formatKrw(item.feeAmount) : '-'}
-                        </td>
-                        <td className="p-3 border-r border-slate-200 text-right font-mono font-bold text-slate-700 text-sm whitespace-nowrap">
-                          {item.feePercent !== undefined ? `${item.feePercent}%` : '-'}
-                        </td>
-                        <td className="p-3 border-r border-slate-200 text-center text-slate-500 font-bold whitespace-nowrap">
-                          {item.realName || '-'}
-                        </td>
-                        <td className="p-3 font-semibold text-slate-400">
-                          {item.notes ? (
-                            <span className="px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 font-black text-[10px] border border-rose-100/50">
-                              {item.notes}
+                      isAdmin ? (
+                        <tr key={item.id} className="hover:bg-slate-50/70 transition-colors duration-75">
+                          {/* 코치명 */}
+                          <td className="p-1 border-r border-slate-200">
+                            <input
+                              type="text"
+                              value={item.coachName}
+                              onChange={(e) => handleTariffChange(item.id, 'coachName', e.target.value)}
+                              onBlur={() => persistTariff(item.id)}
+                              className="w-full bg-transparent p-1.5 font-black text-slate-900 text-sm focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded"
+                            />
+                          </td>
+                          {/* 코칭방식 */}
+                          <td className="p-1 border-r border-slate-200 text-center">
+                            <select
+                              value={item.method}
+                              onChange={(e) => { handleTariffChange(item.id, 'method', e.target.value); persistTariff(item.id); }}
+                              className="w-full bg-transparent p-1.5 font-bold text-slate-800 text-xs focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded"
+                            >
+                              <option value="통합">통합</option>
+                              <option value="대면">대면</option>
+                              <option value="비대면">비대면</option>
+                              <option value="대입">대입</option>
+                            </select>
+                          </td>
+                          {/* 수수료(원) */}
+                          <td className="p-1 border-r border-slate-200">
+                            <input
+                              type="number"
+                              value={item.feeAmount ?? ''}
+                              onChange={(e) => handleTariffChange(item.id, 'feeAmount', e.target.value)}
+                              onBlur={() => persistTariff(item.id)}
+                              placeholder="-"
+                              className="w-full text-right bg-transparent p-1.5 font-mono font-bold text-slate-700 text-sm focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded"
+                            />
+                          </td>
+                          {/* 수수료(%) */}
+                          <td className="p-1 border-r border-slate-200">
+                            <input
+                              type="number"
+                              value={item.feePercent ?? ''}
+                              onChange={(e) => handleTariffChange(item.id, 'feePercent', e.target.value)}
+                              onBlur={() => persistTariff(item.id)}
+                              placeholder="-"
+                              className="w-full text-right bg-transparent p-1.5 font-mono font-bold text-slate-700 text-sm focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded"
+                            />
+                          </td>
+                          {/* 본명 */}
+                          <td className="p-1 border-r border-slate-200 text-center">
+                            <input
+                              type="text"
+                              value={item.realName ?? ''}
+                              onChange={(e) => handleTariffChange(item.id, 'realName', e.target.value)}
+                              onBlur={() => persistTariff(item.id)}
+                              placeholder="-"
+                              className="w-full text-center bg-transparent p-1.5 font-bold text-slate-500 text-xs focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded"
+                            />
+                          </td>
+                          {/* 비고 */}
+                          <td className="p-1 border-r border-slate-200">
+                            <input
+                              type="text"
+                              value={item.notes ?? ''}
+                              onChange={(e) => handleTariffChange(item.id, 'notes', e.target.value)}
+                              onBlur={() => persistTariff(item.id)}
+                              placeholder="예. 프리미엄"
+                              className="w-full bg-transparent p-1.5 font-semibold text-slate-600 text-xs focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded"
+                            />
+                          </td>
+                          {/* 삭제 */}
+                          <td className="p-1 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteTariff(item.id, item.coachName)}
+                              className="text-slate-300 hover:text-rose-500 duration-70 p-1 rounded hover:bg-rose-50 cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4 mx-auto" />
+                            </button>
+                          </td>
+                        </tr>
+                      ) : (
+                        <tr key={item.id} className="hover:bg-slate-50/70 transition-colors duration-75">
+                          <td className="p-3 font-black text-slate-900 border-r border-slate-200 text-sm whitespace-nowrap">{item.coachName}</td>
+                          <td className="p-3 border-r border-slate-200 text-center whitespace-nowrap">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              item.method === '통합' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100/50' :
+                              item.method === '대면' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100/50' :
+                              item.method === '비대면' ? 'bg-amber-50 text-amber-700 border border-amber-100/50' :
+                              'bg-violet-50 text-violet-700 border border-violet-100/50'
+                            }`}>
+                              {item.method}
                             </span>
-                          ) : '-'}
-                        </td>
-                      </tr>
+                          </td>
+                          <td className="p-3 border-r border-slate-200 text-right font-mono font-bold text-slate-700 text-sm whitespace-nowrap">
+                            {item.feeAmount !== undefined ? formatKrw(item.feeAmount) : '-'}
+                          </td>
+                          <td className="p-3 border-r border-slate-200 text-right font-mono font-bold text-slate-700 text-sm whitespace-nowrap">
+                            {item.feePercent !== undefined ? `${item.feePercent}%` : '-'}
+                          </td>
+                          <td className="p-3 border-r border-slate-200 text-center text-slate-500 font-bold whitespace-nowrap">
+                            {item.realName || '-'}
+                          </td>
+                          <td className="p-3 font-semibold text-slate-400">
+                            {item.notes ? (
+                              <span className="px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 font-black text-[10px] border border-rose-100/50">
+                                {item.notes}
+                              </span>
+                            ) : '-'}
+                          </td>
+                        </tr>
+                      )
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6} className="p-10 text-center text-slate-400 font-sans">
+                      <td colSpan={isAdmin ? 7 : 6} className="p-10 text-center text-slate-400 font-sans">
                         조회된 코칭 방식 요율 테이블 항목이 전산상에 존재하지 않습니다.
                       </td>
                     </tr>
@@ -1302,15 +1520,15 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                         setNewCoach({ name: '', email: '', phone: '', specialty: '', tier: 'A', status: 'active' });
                         return;
                       }
-                      const tariffs = COACH_TARIFF_TABLE.filter(t => t.coachName === selectedName);
-                      const hasPremium = tariffs.some(t => t.notes === '프리미엄');
-                      const tier = hasPremium ? 'A' : (tariffs.some(t => t.feeAmount && t.feeAmount >= 70000) ? 'A' : 'B');
-                      
+                      const coachTariffs = tariffs.filter(t => t.coachName === selectedName);
+                      const hasPremium = coachTariffs.some(t => t.notes === '프리미엄');
+                      const tier = hasPremium ? 'A' : (coachTariffs.some(t => t.feeAmount && t.feeAmount >= 70000) ? 'A' : 'B');
+
                       setNewCoach({
                         name: selectedName,
                         email: `${selectedName}@coachingpass.com`,
                         phone: newCoach.phone || `010-5555-${String(1000 + Math.floor(Math.random() * 9000)).substring(1)}`,
-                        specialty: tariffs.map(t => t.method).join('/') + ' 코칭 전문가',
+                        specialty: coachTariffs.map(t => t.method).join('/') + ' 코칭 전문가',
                         tier: tier as any,
                         status: 'active'
                       });
@@ -1318,7 +1536,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                     className="w-full border p-2.5 rounded-xl font-bold bg-transparent"
                   >
                     <option value="">코칭 요율표 기준 코치 선택</option>
-                    {Array.from(new Set(COACH_TARIFF_TABLE.map(t => t.coachName))).sort().map(name => (
+                    {Array.from(new Set(tariffs.map(t => t.coachName))).sort().map(name => (
                       <option key={name} value={name}>{name}</option>
                     ))}
                   </select>

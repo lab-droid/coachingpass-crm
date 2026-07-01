@@ -406,7 +406,7 @@ export default function App() {
       case 'settlement':
         return <Settlement sales={visibleSales} setSales={handleSetSales} />;
       case 'coach_fees':
-        return <CoachFees sales={visibleSales} />;
+        return <CoachFees sales={visibleSales} user={user!} />;
       case 'sales_fees':
         return <SalesFees sales={visibleSales} />;
       case 'employees':
