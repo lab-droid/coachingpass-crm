@@ -782,10 +782,14 @@ export default function Employees({ user }: EmployeesProps) {
         joinedDate: currentEmployee.joinedDate || new Date().toISOString().split('T')[0],
         status: (currentEmployee.status as any) || 'active',
         baseSalary: Number(currentEmployee.baseSalary) || 0,
-        salesTarget: Number(currentEmployee.salesTarget) || 0,
-        commissionRate: currentEmployee.role === '영업팀' ? (Number(currentEmployee.commissionRate) || 0) : undefined,
-        coachingFee: currentEmployee.role === '코치' ? (Number(currentEmployee.coachingFee) || 0) : undefined
+        salesTarget: Number(currentEmployee.salesTarget) || 0
       };
+      // Firestore는 undefined 필드를 거부하므로, 값이 있을 때만 추가한다.
+      if (currentEmployee.role === '영업팀') {
+        savedEmployee.commissionRate = Number(currentEmployee.commissionRate) || 0;
+      } else if (currentEmployee.role === '코치') {
+        savedEmployee.coachingFee = Number(currentEmployee.coachingFee) || 0;
+      }
 
       if (isQuotaExceeded()) {
         setEmployees(prev => {
@@ -1252,7 +1256,7 @@ export default function Employees({ user }: EmployeesProps) {
                       disabled={!isAdmin}
                       value={currentEmployee?.email || ''}
                       onChange={(e) => setCurrentEmployee({ ...currentEmployee, email: e.target.value })}
-                      placeholder="office@example.com"
+                      placeholder="이메일을 직접 입력하세요"
                       className="w-full px-3.5 py-2.5 text-xs border border-slate-200 bg-slate-50 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-all font-semibold"
                     />
                   </div>
@@ -1263,7 +1267,7 @@ export default function Employees({ user }: EmployeesProps) {
                       disabled={!isAdmin}
                       value={currentEmployee?.phone || ''}
                       onChange={(e) => setCurrentEmployee({ ...currentEmployee, phone: e.target.value })}
-                      placeholder="010-0000-0000"
+                      placeholder="연락처를 직접 입력하세요"
                       className="w-full px-3.5 py-2.5 text-xs border border-slate-200 bg-slate-50 disabled:bg-slate-100 disabled:text-slate-500 rounded-xl focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-500 transition-all font-mono font-medium"
                     />
                   </div>
