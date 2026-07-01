@@ -44,23 +44,24 @@ export default function Sidebar(props: SidebarProps) {
     { id: 'employees', label: '임직원', icon: Users },
     { id: 'analytics', label: '심층 요약 분석', icon: BarChart3 },
     { id: 'accounts', label: '계정 생성 및 관리', icon: Key },
+    { id: 'mypage', label: '마이페이지', icon: UserCircle },
     { id: 'settings', label: '시스템 설정', icon: SettingsIcon },
   ];
 
-  // Filter menu items by role
+  // Filter menu items by role (마이페이지는 모든 로그인 사용자에게 노출)
   const getMenuItems = () => {
     const role = props.user.role;
     if (role === 'admin' || role === 'manager') {
       return fullMenuItems;
     }
     if (role === '영업팀') {
-      return fullMenuItems.filter(item => 
-        item.id === 'dashboard' || item.id === 'sales' || item.id === 'sales_fees'
+      return fullMenuItems.filter(item =>
+        item.id === 'dashboard' || item.id === 'sales' || item.id === 'sales_fees' || item.id === 'mypage'
       );
     }
     if (role === '코치') {
-      return fullMenuItems.filter(item => 
-        item.id === 'dashboard' || item.id === 'coach_fees'
+      return fullMenuItems.filter(item =>
+        item.id === 'dashboard' || item.id === 'coach_fees' || item.id === 'mypage'
       );
     }
     // Default fallback

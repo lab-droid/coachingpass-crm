@@ -18,14 +18,19 @@ import {
   Briefcase, 
   CheckCircle2, 
   XCircle, 
-  DollarSign, 
-  TrendingUp, 
+  DollarSign,
+  TrendingUp,
   ChevronDown,
-  X
+  X,
+  Eye,
+  EyeOff,
+  KeyRound,
+  RefreshCw
 } from 'lucide-react';
 import { Employee, User } from '../types';
 import { db, handleFirestoreError, OperationType, isQuotaExceeded } from '../firebase';
 import { collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
+import { generateTempPassword } from '../utils/password';
 
 // Initial internal mock staff in case empty
 const RAW_DEFAULT_EMPLOYEES: Employee[] = [
@@ -564,6 +569,7 @@ const formatEmployeeNumber = (seq: number) => 'CP' + String(seq).padStart(4, '0'
 
 const DEFAULT_EMPLOYEES: Employee[] = RAW_DEFAULT_EMPLOYEES.map((emp, i) => {
   const employeeNumber = formatEmployeeNumber(i + 1); // 순서대로 사번 부여 (대표이사 = CP0001)
+  const initialPassword = generateTempPassword(); // 초기(임시) 랜덤 비밀번호
   if (emp.role === '영업팀') {
     let rate = 10;
     if (emp.id === 'emp_003') rate = 15; // 오근목
@@ -571,16 +577,18 @@ const DEFAULT_EMPLOYEES: Employee[] = RAW_DEFAULT_EMPLOYEES.map((emp, i) => {
     return {
       ...emp,
       employeeNumber,
+      initialPassword,
       commissionRate: rate
     };
   } else if (emp.role === '코치') {
     return {
       ...emp,
       employeeNumber,
+      initialPassword,
       coachingFee: 150500 // ₩150,500 coaching fee
     };
   }
-  return { ...emp, employeeNumber };
+  return { ...emp, employeeNumber, initialPassword };
 });
 
 interface EmployeesProps {
@@ -588,7 +596,7 @@ interface EmployeesProps {
 }
 
 let employeesSeedAttempted = false;
-let employeeNumberBackfillAttempted = false;
+let employeeBackfillAttempted = false;
 
 export default function Employees({ user }: EmployeesProps) {
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -596,7 +604,8 @@ export default function Employees({ user }: EmployeesProps) {
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [deptFilter, setDeptFilter] = useState<string>('all');
-  
+  const [showPwMap, setShowPwMap] = useState<{ [id: string]: boolean }>({});
+
   // Create / Edit modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentEmployee, setCurrentEmployee] = useState<Partial<Employee> | null>(null);
@@ -625,18 +634,26 @@ export default function Employees({ user }: EmployeesProps) {
         (emp.role === '영업팀' && emp.department !== '컨설턴트')
       );
 
-      // 사번(employeeNumber) 미부여 문서에 대해 사번만 안전하게 백필 (기존 편집값 보존)
-      if (!employeeNumberBackfillAttempted && !isQuotaExceeded()) {
-        const missing = dbEmployees.filter(emp => !emp.employeeNumber && DEFAULT_EMPLOYEES.some(d => d.id === emp.id));
+      // 사번/초기비밀번호 미부여 문서에 대해 해당 필드만 안전하게 백필 (기존 편집값 보존)
+      if (!employeeBackfillAttempted && !isQuotaExceeded()) {
+        const missing = dbEmployees.filter(emp =>
+          !emp.initialPassword ||
+          (!emp.employeeNumber && DEFAULT_EMPLOYEES.some(d => d.id === emp.id))
+        );
         if (missing.length > 0) {
-          employeeNumberBackfillAttempted = true;
+          employeeBackfillAttempted = true;
           missing.forEach(async (emp) => {
-            const def = DEFAULT_EMPLOYEES.find(d => d.id === emp.id);
-            if (def?.employeeNumber) {
+            const patch: Partial<Employee> = {};
+            if (!emp.initialPassword) patch.initialPassword = generateTempPassword();
+            if (!emp.employeeNumber) {
+              const def = DEFAULT_EMPLOYEES.find(d => d.id === emp.id);
+              if (def?.employeeNumber) patch.employeeNumber = def.employeeNumber;
+            }
+            if (Object.keys(patch).length > 0) {
               try {
-                await setDoc(doc(db, 'employees', emp.id), { employeeNumber: def.employeeNumber }, { merge: true });
+                await setDoc(doc(db, 'employees', emp.id), patch, { merge: true });
               } catch (e) {
-                console.error("Failed to backfill 사번:", emp.id, e);
+                console.error("Failed to backfill employee fields:", emp.id, e);
               }
             }
           });
@@ -746,6 +763,7 @@ export default function Employees({ user }: EmployeesProps) {
         id: employeeId,
         name: currentEmployee.name,
         employeeNumber: currentEmployee.employeeNumber || nextEmployeeNumber(),
+        initialPassword: currentEmployee.initialPassword || generateTempPassword(),
         email: currentEmployee.email,
         phone: currentEmployee.phone || '',
         role: currentEmployee.role as any,
@@ -818,6 +836,7 @@ export default function Employees({ user }: EmployeesProps) {
     setCurrentEmployee({
       name: '',
       employeeNumber: nextEmployeeNumber(),
+      initialPassword: generateTempPassword(),
       email: '',
       phone: '',
       role: '코치',
@@ -966,6 +985,7 @@ export default function Employees({ user }: EmployeesProps) {
               <tr className="bg-slate-50 text-slate-400 font-bold text-[11px] uppercase tracking-wider border-b border-slate-100">
                 <th className="px-6 py-3.5">사번</th>
                 <th className="px-6 py-3.5">성명</th>
+                {isAdmin && <th className="px-6 py-3.5">초기 비밀번호 (관리자 전용)</th>}
                 <th className="px-6 py-3.5">소속 부서 / 직무</th>
                 <th className="px-6 py-3.5">연락처 / 이메일</th>
                 <th className="px-6 py-3.5">수수료 (코치) / 수수료율 (영업)</th>
@@ -989,6 +1009,22 @@ export default function Employees({ user }: EmployeesProps) {
                         <span>{emp.name}</span>
                       </div>
                     </td>
+                    {isAdmin && (
+                      <td className="px-6 py-4.5 border-b border-slate-100">
+                        <div className="flex items-center space-x-2 font-mono font-bold text-slate-700">
+                          <KeyRound className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                          <span className="text-xs">{showPwMap[emp.id] ? (emp.initialPassword || '-') : '••••••••'}</span>
+                          <button
+                            type="button"
+                            onClick={() => setShowPwMap(prev => ({ ...prev, [emp.id]: !prev[emp.id] }))}
+                            className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 cursor-pointer transition-colors"
+                            title="초기 비밀번호 표시/숨김"
+                          >
+                            {showPwMap[emp.id] ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                          </button>
+                        </div>
+                      </td>
+                    )}
                     <td className="px-6 py-4.5 border-b border-slate-100">
                       <div>
                         <div className="font-semibold text-slate-800">{emp.department}</div>
@@ -1072,7 +1108,7 @@ export default function Employees({ user }: EmployeesProps) {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={8} className="py-20 text-center text-slate-400 font-sans">
+                  <td colSpan={isAdmin ? 9 : 8} className="py-20 text-center text-slate-400 font-sans">
                     <Users className="h-10 w-10 text-slate-200 mx-auto mb-3" />
                     인사 필터링 조건에 부합하는 임직원이 존재하지 않습니다.
                   </td>
@@ -1129,16 +1165,39 @@ export default function Employees({ user }: EmployeesProps) {
 
               {/* Form Content */}
               <form onSubmit={handleSaveEmployee} className="p-6 space-y-4">
-                {/* 사번 (자동 채번, 로그인 비밀번호로 사용) */}
+                {/* 사번 (자동 채번) */}
                 <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl px-3.5 py-2.5 flex items-center justify-between">
                   <div>
                     <span className="block text-indigo-700 font-bold text-[10px] uppercase">사번 (자동 부여)</span>
-                    <span className="text-[10px] text-indigo-500/90 font-medium">이 사번이 해당 임직원의 로그인 비밀번호로 설정됩니다.</span>
+                    <span className="text-[10px] text-indigo-500/90 font-medium">임직원 식별용 사번입니다.</span>
                   </div>
                   <span className="font-mono font-black text-indigo-700 text-sm bg-white border border-indigo-200 px-3 py-1.5 rounded-lg">
                     {currentEmployee?.employeeNumber || '자동 부여'}
                   </span>
                 </div>
+
+                {/* 초기(임시) 비밀번호 - 관리자 전용 */}
+                {isAdmin && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 flex items-center justify-between">
+                    <div>
+                      <span className="block text-slate-600 font-bold text-[10px] uppercase">초기 로그인 비밀번호 (임시)</span>
+                      <span className="text-[10px] text-slate-400 font-medium">랜덤 영문+숫자. 임직원은 마이페이지에서 변경합니다.</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="font-mono font-black text-slate-800 text-sm bg-white border border-slate-200 px-3 py-1.5 rounded-lg">
+                        {currentEmployee?.initialPassword || '자동 생성'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentEmployee({ ...currentEmployee, initialPassword: generateTempPassword() })}
+                        className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-500 hover:text-slate-700 cursor-pointer"
+                        title="초기 비밀번호 재발급"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>

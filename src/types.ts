@@ -81,7 +81,8 @@ export interface AnalyticsPeriod {
 export interface Employee {
   id: string;
   name: string;
-  employeeNumber?: string; // 사번 (예: CP0001) — 로그인 비밀번호로도 사용
+  employeeNumber?: string; // 사번 (예: CP0001)
+  initialPassword?: string; // 초기(임시) 로그인 비밀번호 — 관리자만 확인
   email: string;
   phone: string;
   role: '코치' | '영업팀' | '관리자' | '임원';

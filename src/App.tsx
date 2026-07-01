@@ -32,6 +32,7 @@ import CoachFees from './components/CoachFees';
 import SalesFees from './components/SalesFees';
 import Employees from './components/Employees';
 import AccountsManagement from './components/AccountsManagement';
+import MyPage from './components/MyPage';
 
 // Excel ROUNDDOWN equivalent helper
 const roundDown = (value: number, digits: number): number => {
@@ -415,6 +416,8 @@ export default function App() {
         return <Analytics sales={visibleSales} settings={settings} />;
       case 'accounts':
         return <AccountsManagement user={user!} />;
+      case 'mypage':
+        return <MyPage user={user!} />;
       case 'settings':
         return (
           <Settings 

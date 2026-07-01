@@ -135,8 +135,9 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
       if (emp) {
         setAccountName(emp.name);
         setLoginEmail(emp.email);
-        // 사번을 로그인 비밀번호로 자동 설정
-        if (emp.employeeNumber) setLoginPassword(emp.employeeNumber);
+        // 초기(임시) 비밀번호를 로그인 비밀번호로 자동 설정
+        if (emp.initialPassword) setLoginPassword(emp.initialPassword);
+        else if (emp.employeeNumber) setLoginPassword(emp.employeeNumber);
         if (emp.role === '영업팀') {
           setCustomRole('영업팀');
         } else if (emp.role === '관리자' || emp.role === '임원') {
@@ -358,37 +359,41 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
     }
   };
 
-  // 임직원 연동 계정의 비밀번호를 각자의 사번으로 일괄 동기화
-  const handleSyncSabunPasswords = async () => {
+  // 임직원 연동 계정의 비밀번호를 각자의 초기(임시) 비밀번호로 일괄 동기화
+  const handleSyncInitialPasswords = async () => {
     const empById = new Map<string, Employee>(employees.map(e => [e.id, e] as [string, Employee]));
-    const targets = accounts.filter(a => a.employeeId && empById.get(a.employeeId)?.employeeNumber);
+    const pwOf = (id?: string) => {
+      const emp = id ? empById.get(id) : undefined;
+      return emp?.initialPassword || emp?.employeeNumber;
+    };
+    const targets = accounts.filter(a => a.employeeId && pwOf(a.employeeId));
     if (targets.length === 0) {
-      showToast('사번이 부여된 임직원 연동 계정이 없습니다.');
+      showToast('초기 비밀번호가 부여된 임직원 연동 계정이 없습니다.');
       return;
     }
-    if (!confirm(`${targets.length}개 임직원 계정의 로그인 비밀번호를 각자의 사번으로 일괄 설정하시겠습니까?`)) return;
+    if (!confirm(`${targets.length}개 임직원 계정의 로그인 비밀번호를 각자의 초기(임시) 비밀번호로 일괄 설정하시겠습니까?`)) return;
 
     if (isQuotaExceeded()) {
       setAccounts(prev => {
         const next = prev.map(a => {
-          const emp = a.employeeId ? empById.get(a.employeeId) : undefined;
-          return emp?.employeeNumber ? { ...a, password: emp.employeeNumber } : a;
+          const pw = pwOf(a.employeeId);
+          return pw ? { ...a, password: pw } : a;
         });
         localStorage.setItem('cached_user_accounts', JSON.stringify(next));
         return next;
       });
-      showToast(`[로컬] ${targets.length}개 계정 비밀번호를 사번으로 설정했습니다.`);
+      showToast(`[로컬] ${targets.length}개 계정 비밀번호를 초기 비밀번호로 설정했습니다.`);
       return;
     }
 
     try {
       await Promise.all(
-        targets.map(a => setDoc(doc(db, 'user_accounts', a.id), { password: empById.get(a.employeeId!)!.employeeNumber }, { merge: true }))
+        targets.map(a => setDoc(doc(db, 'user_accounts', a.id), { password: pwOf(a.employeeId) }, { merge: true }))
       );
-      showToast(`${targets.length}개 임직원 계정의 비밀번호를 사번으로 동기화했습니다.`);
+      showToast(`${targets.length}개 임직원 계정의 비밀번호를 초기 비밀번호로 동기화했습니다.`);
     } catch (e: any) {
       console.error(e);
-      alert('사번 비밀번호 동기화 실패: ' + (e?.message || e));
+      alert('초기 비밀번호 동기화 실패: ' + (e?.message || e));
     }
   };
 
@@ -432,12 +437,12 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={handleSyncSabunPasswords}
+            onClick={handleSyncInitialPasswords}
             className="flex items-center justify-center space-x-2 px-4 py-2.5 sm:px-4.5 sm:py-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer"
-            title="임직원 연동 계정의 비밀번호를 각자 사번으로 일괄 설정"
+            title="임직원 연동 계정의 비밀번호를 각자 초기(임시) 비밀번호로 일괄 설정"
           >
             <Key className="h-4 w-4" />
-            <span>사번으로 비밀번호 동기화</span>
+            <span>초기 비밀번호로 동기화</span>
           </button>
           <button
             onClick={() => { resetForm(); setIsModalOpen(true); }}
@@ -726,7 +731,7 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
                   required
                 />
                 {selectedStaffType === 'employee' && (
-                  <p className="text-[10px] text-indigo-500 mt-1 font-medium">임직원 사번이 초기 로그인 비밀번호로 자동 설정됩니다.</p>
+                  <p className="text-[10px] text-indigo-500 mt-1 font-medium">임직원 초기(임시) 비밀번호가 자동 설정됩니다.</p>
                 )}
               </div>
 
