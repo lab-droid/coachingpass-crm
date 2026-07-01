@@ -5,10 +5,10 @@
 
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Server, ShieldCheck, AlertCircle, Sparkles, Lock, Mail, Eye, EyeOff, ExternalLink, Smartphone } from 'lucide-react';
+import { Server, ShieldCheck, AlertCircle, Sparkles, Lock, Mail, Eye, EyeOff, ExternalLink, Smartphone, Hash, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { User, UserAccount } from '../types';
 import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import logoUrl from '../assets/images/coachingpass_logo.png';
 
@@ -24,14 +24,26 @@ const MOCK_ACCOUNTS = [
 // Firebase Auth 인프라 문제(제공자 미활성/네트워크)로 판단되면 레거시 로그인으로 폴백해야 하는 에러코드
 const AUTH_FALLBACK_CODES = ['auth/operation-not-allowed', 'auth/network-request-failed', 'auth/internal-error', 'auth/configuration-not-found', 'auth/api-key-not-valid'];
 
-// 해당 이메일의 임직원이 '퇴사(resigned/inactive)' 상태면 로그인 차단
-async function isEmployeeResigned(email: string): Promise<boolean> {
+// 로그인 ID(사번 또는 이메일)를 실제 로그인 이메일로 해석하고, 퇴사 여부를 함께 반환.
+// - 이메일 입력: 그대로 사용(임직원이면 퇴사 여부 확인)
+// - 사번 입력: 임직원 목록에서 employeeNumber로 이메일을 찾음(없으면 null)
+async function resolveLoginId(input: string): Promise<{ email: string; resigned: boolean } | null> {
+  const trimmed = (input || '').trim();
+  if (!trimmed) return null;
+  const isEmail = trimmed.includes('@');
   try {
     const snap = await getDocs(collection(db, 'employees'));
-    const emp = snap.docs.map(d => d.data() as any).find(e => (e.email || '').toLowerCase() === email);
-    return !!emp && (emp.status === 'resigned' || emp.status === 'inactive');
+    const emps = snap.docs.map(d => d.data() as any);
+    const emp = isEmail
+      ? emps.find(e => (e.email || '').toLowerCase() === trimmed.toLowerCase())
+      : emps.find(e => (e.employeeNumber || '').toUpperCase() === trimmed.toUpperCase());
+    const email = isEmail ? trimmed.toLowerCase() : (emp?.email || '').toLowerCase();
+    if (!email) return null; // 사번을 찾지 못함
+    const resigned = !!emp && (emp.status === 'resigned' || emp.status === 'inactive');
+    return { email, resigned };
   } catch {
-    return false;
+    // Firestore 조회 실패(오프라인 등): 이메일 입력은 그대로 사용, 사번은 해석 불가
+    return isEmail ? { email: trimmed.toLowerCase(), resigned: false } : null;
   }
 }
 
@@ -152,6 +164,52 @@ export default function Login(props: LoginProps) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
+  // 비밀번호 찾기(이메일 재설정) 상태
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotId, setForgotId] = useState('');
+  const [forgotSending, setForgotSending] = useState(false);
+  const [forgotMsg, setForgotMsg] = useState<string | null>(null);
+  const [forgotIsError, setForgotIsError] = useState(false);
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotMsg(null);
+    setForgotIsError(false);
+    const input = forgotId.trim();
+    if (!input) {
+      setForgotIsError(true);
+      setForgotMsg('사번 또는 이메일을 입력해 주세요.');
+      return;
+    }
+    setForgotSending(true);
+    try {
+      const resolved = await resolveLoginId(input);
+      if (!resolved || !resolved.email) {
+        setForgotIsError(true);
+        setForgotMsg('해당 사번 또는 이메일의 계정을 찾을 수 없습니다.');
+        setForgotSending(false);
+        return;
+      }
+      await sendPasswordResetEmail(auth, resolved.email);
+      setForgotIsError(false);
+      setForgotMsg(`${resolved.email} 로 비밀번호 재설정 메일을 보냈습니다. 메일함(스팸함 포함)을 확인해 주세요.`);
+    } catch (err: any) {
+      const code = err?.code || '';
+      setForgotIsError(true);
+      if (code === 'auth/user-not-found') {
+        setForgotMsg('아직 최초 로그인을 하지 않은 계정입니다. 관리자에게 초기 비밀번호를 문의하세요.');
+      } else if (code === 'auth/operation-not-allowed' || code === 'auth/configuration-not-found') {
+        setForgotMsg('이메일 재설정 기능이 비활성화되어 있습니다. 관리자에게 문의하세요.');
+      } else if (code === 'auth/invalid-email') {
+        setForgotMsg('이메일 형식이 올바르지 않습니다.');
+      } else {
+        setForgotMsg('재설정 메일 발송에 실패했습니다: ' + (err?.message || code));
+      }
+    } finally {
+      setForgotSending(false);
+    }
+  };
+
   const handleGoogleLogin = async () => {
     setErrorCode(null);
 
@@ -207,14 +265,26 @@ export default function Login(props: LoginProps) {
   const handleCredentialLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailId.trim() || !password.trim()) {
-      setErrorCode("로그인 ID와 비밀번호를 모두 입력해주십시오.");
+      setErrorCode("사번(또는 이메일)과 비밀번호를 모두 입력해주십시오.");
       return;
     }
 
     setErrorCode(null);
     setIsLoading(true);
 
-    const email = emailId.trim().toLowerCase();
+    // 사번 또는 이메일을 실제 로그인 이메일로 해석
+    const resolved = await resolveLoginId(emailId);
+    if (!resolved) {
+      setErrorCode("해당 사번 또는 이메일의 계정을 찾을 수 없습니다.");
+      setIsLoading(false);
+      return;
+    }
+    if (resolved.resigned) {
+      setErrorCode("퇴사 처리된 계정으로 로그인이 차단되었습니다. 관리자에게 문의하세요.");
+      setIsLoading(false);
+      return;
+    }
+    const email = resolved.email;
 
     try {
       // ── 1) Firebase Auth 경로 (단계적 이관) ─────────────────────────────
@@ -263,12 +333,6 @@ export default function Login(props: LoginProps) {
       }
 
       if (authResult) {
-        if (await isEmployeeResigned(email)) {
-          try { await signOut(auth); } catch { /* ignore */ }
-          setErrorCode("퇴사 처리된 계정으로 로그인이 차단되었습니다. 관리자에게 문의하세요.");
-          setIsLoading(false);
-          return;
-        }
         const loggedInUser: User = {
           id: authResult.id,
           email,
@@ -291,11 +355,6 @@ export default function Login(props: LoginProps) {
       }
       if (matchedAccount.status === 'inactive') {
         setErrorCode("해당 계정은 시스템 운영자에 의해 정지(비활성화)된 계정입니다.");
-        setIsLoading(false);
-        return;
-      }
-      if (await isEmployeeResigned(email)) {
-        setErrorCode("퇴사 처리된 계정으로 로그인이 차단되었습니다. 관리자에게 문의하세요.");
         setIsLoading(false);
         return;
       }
@@ -386,20 +445,81 @@ export default function Login(props: LoginProps) {
           )}
 
           {activeLoginTab === 'credential' ? (
+            showForgot ? (
+              /* 비밀번호 찾기 (이메일 재설정) */
+              <form onSubmit={handleForgotPassword} className="space-y-4">
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => { setShowForgot(false); setForgotMsg(null); }}
+                    className="flex items-center space-x-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 cursor-pointer mb-1"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    <span>로그인으로 돌아가기</span>
+                  </button>
+                  <h3 className="text-sm font-bold text-slate-800">비밀번호 찾기</h3>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">가입된 이메일로 비밀번호 재설정 링크를 보내드립니다. 사번 또는 이메일을 입력하세요.</p>
+                </div>
+
+                {forgotMsg && (
+                  <div className={`p-3.5 rounded-lg flex items-start space-x-2 text-left border-l-4 ${forgotIsError ? 'bg-red-50 border-red-500' : 'bg-emerald-50 border-emerald-500'}`}>
+                    {forgotIsError ? <AlertCircle className="h-4.5 w-4.5 text-red-500 shrink-0 mt-0.5" /> : <CheckCircle2 className="h-4.5 w-4.5 text-emerald-500 shrink-0 mt-0.5" />}
+                    <span className={`text-[11px] font-semibold leading-relaxed ${forgotIsError ? 'text-red-800' : 'text-emerald-800'}`}>{forgotMsg}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">사번 또는 이메일</label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                      <Mail className="h-4 w-4" />
+                    </div>
+                    <input
+                      type="text"
+                      value={forgotId}
+                      onChange={(e) => setForgotId(e.target.value)}
+                      className="w-full text-xs font-medium pl-10 pr-4 py-2.5 bg-slate-50/50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800/80 transition-all font-mono"
+                      placeholder="CP0001 또는 name@coachingpass.com"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={forgotSending}
+                  className="w-full flex justify-center items-center space-x-2 py-3 px-4 rounded-xl shadow-md text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 focus:outline-none transition-colors cursor-pointer disabled:opacity-75"
+                >
+                  {forgotSending ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      <span>메일 발송 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Mail className="h-4 w-4 text-emerald-400" />
+                      <span>재설정 메일 보내기</span>
+                    </>
+                  )}
+                </button>
+              </form>
+            ) : (
             <form onSubmit={handleCredentialLogin} className="space-y-4">
-              {/* ID / Email */}
+              {/* 사번 / 이메일 */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">로그인 이메일 (ID)</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">사번 (또는 이메일)</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                    <Mail className="h-4 w-4" />
+                    <Hash className="h-4 w-4" />
                   </div>
                   <input
-                    type="email"
+                    type="text"
                     value={emailId}
                     onChange={(e) => setEmailId(e.target.value)}
                     className="w-full text-xs font-medium pl-10 pr-4 py-2.5 bg-slate-50/50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800/80 transition-all font-mono"
-                    placeholder="name@coachingpass.com"
+                    placeholder="CP0001 (또는 name@coachingpass.com)"
                     autoComplete="username"
                     required
                   />
@@ -409,8 +529,14 @@ export default function Login(props: LoginProps) {
               {/* Password */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-bold text-slate-700">로그인 암호</label>
-                  <span className="text-[10px] text-indigo-600 font-bold">암구 비밀번호</span>
+                  <label className="block text-xs font-bold text-slate-700">로그인 비밀번호</label>
+                  <button
+                    type="button"
+                    onClick={() => { setShowForgot(true); setForgotId(emailId); setForgotMsg(null); setErrorCode(null); }}
+                    className="text-[10px] text-indigo-600 font-bold hover:text-indigo-800 cursor-pointer"
+                  >
+                    비밀번호를 잊으셨나요?
+                  </button>
                 </div>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
@@ -452,11 +578,12 @@ export default function Login(props: LoginProps) {
                 ) : (
                   <>
                     <ShieldCheck className="h-4 w-4 text-indigo-300" />
-                    <span>발급된 계정으로 통합 로그인</span>
+                    <span>사번으로 통합 로그인</span>
                   </>
                 )}
               </button>
             </form>
+            )
           ) : (
             <div className="space-y-4">
               {inAppBrowser && (
