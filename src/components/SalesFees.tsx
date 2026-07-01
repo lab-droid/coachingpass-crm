@@ -26,6 +26,7 @@ import {
 import { SalesFeeItem, Sale, Employee } from '../types';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
+import { COACH_TARIFF_TABLE } from '../data/coachTariff';
 
 // Excel ROUNDDOWN equivalent helper
 const roundDown = (value: number, digits: number): number => {
@@ -48,6 +49,9 @@ interface SalesFeesProps {
 
 export default function SalesFees(props: SalesFeesProps) {
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [coachNames, setCoachNames] = useState<string[]>(() =>
+    Array.from(new Set(COACH_TARIFF_TABLE.map(t => t.coachName))).sort()
+  );
   const [selectedManagerName, setSelectedManagerName] = useState<string | null>(null);
   
   // Spreadsheet / list filters
@@ -75,6 +79,21 @@ export default function SalesFees(props: SalesFeesProps) {
       console.error("Firestore employees load error in SalesFees:", error);
     });
     return () => unsubscribe();
+  }, []);
+
+  // Sync the selectable coach roster from the shared 요율표(coachTariffs) collection
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'coachTariffs'), (snap) => {
+      const names = snap.docs
+        .map(d => (d.data() as any).coachName)
+        .filter(Boolean) as string[];
+      if (names.length > 0) {
+        setCoachNames(Array.from(new Set(names)).sort());
+      }
+    }, (error) => {
+      console.error("Firestore coachTariffs load error in SalesFees:", error);
+    });
+    return () => unsub();
   }, []);
 
   // Compute actual sales managers: merged from database employees (role === '영업팀') and backup static managers
@@ -284,7 +303,8 @@ export default function SalesFees(props: SalesFeesProps) {
         profit: salesAmt - calculatedFeeValue,
         status: (newFee.status as any) || 'pending',
         notes: '수기 등록 영업 수수료',
-        inquiryType: inquiryType
+        inquiryType: inquiryType,
+        coachName: newFee.coachName && newFee.coachName !== '없음' ? newFee.coachName : ''
       };
 
       // Store in sales group
@@ -294,7 +314,7 @@ export default function SalesFees(props: SalesFeesProps) {
         await setDoc(doc(db, 'sales', saleId), item);
       }
       setIsFeeModalOpen(false);
-      setNewFee({ managerId: '', customerName: '', salesAmount: 0, commissionRate: 10, status: 'pending', inquiryType: 'corporate' as any });
+      setNewFee({ managerId: '', customerName: '', salesAmount: 0, commissionRate: 10, status: 'pending', inquiryType: 'corporate' as any, coachName: '' });
       showToast(`${selected.name} 님의 영업 매출 수수료 전표가 안전하게 수립되었습니다.`);
     } catch (e) {
       console.error(e);
@@ -356,6 +376,15 @@ export default function SalesFees(props: SalesFeesProps) {
         updatePayload = {
           managerName: cleanName,
           isManagerManuallyEdited: true
+        };
+      }
+
+      // Assigning/changing the coach here syncs to the 코치수수료 ledger (shared sales.coachName).
+      // Clear any manual coach-fee override so CoachFees recalculates for the new coach.
+      if (fieldName === 'coachName') {
+        updatePayload = {
+          coachName: value,
+          coachFeeOverride: null
         };
       }
 
@@ -782,18 +811,19 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                     {/* Visual Sheets Coordinate alphabet row */}
                     <tr className="bg-slate-50 border-b border-slate-200/80 font-mono text-[9px] text-slate-400 font-bold tracking-widest text-center select-none">
                       <th className="w-10 border-r border-slate-200 p-1">#</th>
-                      <th className="w-28 border-r border-slate-200 p-1">A (결제일)</th>
+                      <th className="w-40 border-r border-slate-200 p-1">A (결제일)</th>
                       <th className="w-32 border-r border-slate-200 p-1">B (수강생 이름)</th>
                       <th className="w-28 border-r border-slate-200 p-1">C (영업담당)</th>
-                      <th className="w-32 border-r border-slate-200 p-1">D (DB유입)</th>
-                      <th className="w-32 border-r border-slate-200 p-1">E (총 결제 매출)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">F (부가세 10%)</th>
-                      <th className="w-20 border-r border-slate-200 p-1">G (요율)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">H (영업 커미션)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">I (사업소득세 3%)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">J (주민세 0.3%)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">K (실 지급 수수료)</th>
-                      <th className="w-36 border-r border-slate-200 p-1">L (회계 전산 상태)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">D (담당코치)</th>
+                      <th className="w-32 border-r border-slate-200 p-1">E (DB유입)</th>
+                      <th className="w-32 border-r border-slate-200 p-1">F (총 결제 매출)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">G (부가세 10%)</th>
+                      <th className="w-20 border-r border-slate-200 p-1">H (요율)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">I (영업 커미션)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">J (사업소득세 3%)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">K (주민세 0.3%)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">L (실 지급 수수료)</th>
+                      <th className="w-36 border-r border-slate-200 p-1">M (회계 전산 상태)</th>
                       <th className="w-10 p-1">X</th>
                     </tr>
                     {/* Natural Row headers with descriptive details */}
@@ -802,6 +832,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                       <td className="p-2 border-r border-slate-400">결제 완료일</td>
                       <td className="p-2 border-r border-slate-400">수강생 명세</td>
                       <td className="p-2 border-r border-slate-400">계약 영업담당</td>
+                      <td className="p-2 border-r border-slate-400">담당 코치</td>
                       <td className="p-2 border-r border-slate-400">DB 형태구분</td>
                       <td className="p-2 border-r border-slate-400 font-sans">총 결제 매출액</td>
                       <td className="p-2 border-r border-slate-400">부가세 공제분</td>
@@ -836,29 +867,22 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
 
                             {/* Column A: 결제일 */}
                             <td className="border-r border-slate-200 p-1 text-center font-mono">
-                              <input 
+                              <input
                                 type="date"
                                 value={fee.date}
                                 onChange={(e) => updateSaleProperty(fee.id, 'date', e.target.value)}
-                                className="w-full text-center p-1 bg-transparent hover:bg-amber-50/40 border-0 outline-none text-slate-700 font-medium font-mono rounded"
+                                className="w-full text-left p-1 bg-transparent hover:bg-amber-50/40 border-0 outline-none text-slate-700 font-medium font-mono rounded"
                               />
                             </td>
 
                             {/* Column B: 수강생 이름 */}
                             <td className="border-r border-slate-200 p-1 font-sans">
-                              <div className="flex flex-col">
-                                <input 
-                                  type="text"
-                                  value={fee.customerName}
-                                  onChange={(e) => updateSaleProperty(fee.id, 'customerName', e.target.value)}
-                                  className="w-full text-left font-black p-1 bg-transparent hover:bg-amber-50/40 border-0 outline-none text-slate-900 rounded"
-                                />
-                                {fee.coachName && (
-                                  <span className="text-[10px] text-emerald-600 px-1 font-bold select-none">
-                                    [코치: {fee.coachName}]
-                                  </span>
-                                )}
-                              </div>
+                              <input
+                                type="text"
+                                value={fee.customerName}
+                                onChange={(e) => updateSaleProperty(fee.id, 'customerName', e.target.value)}
+                                className="w-full text-left font-black p-1 bg-transparent hover:bg-amber-50/40 border-0 outline-none text-slate-900 rounded"
+                              />
                             </td>
 
                             {/* Column C: 영업담당 */}
@@ -876,7 +900,26 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               </select>
                             </td>
 
-                            {/* Column D: DB유입 (Inquiry type) */}
+                            {/* Column D: 담당코치 (syncs to 코치수수료) */}
+                            <td className="border-r border-slate-200 p-1">
+                              <select
+                                value={fee.coachName || '없음'}
+                                onChange={(e) => updateSaleProperty(fee.id, 'coachName', e.target.value)}
+                                className={`w-full border-0 outline-none bg-transparent cursor-pointer p-1 font-bold rounded text-center text-xs ${
+                                  fee.coachName && fee.coachName !== '없음' ? 'text-emerald-700' : 'text-slate-400'
+                                }`}
+                              >
+                                <option value="없음">없음</option>
+                                {coachNames.map((name) => (
+                                  <option key={name} value={name}>{name}</option>
+                                ))}
+                                {fee.coachName && fee.coachName !== '없음' && !coachNames.includes(fee.coachName) && (
+                                  <option value={fee.coachName}>{fee.coachName}</option>
+                                )}
+                              </select>
+                            </td>
+
+                            {/* Column E: DB유입 (Inquiry type) */}
                             <td className="border-r border-slate-200 p-1 text-center">
                               <select
                                 value={fee.inquiryType || 'corporate'}
@@ -892,7 +935,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               </select>
                             </td>
 
-                            {/* Column E: 체결 매출액 */}
+                            {/* Column F: 체결 매출액 */}
                             <td className="border-r border-slate-200 p-1 bg-slate-50/25">
                               <input 
                                 type="number"
@@ -902,37 +945,37 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               />
                             </td>
 
-                            {/* Column F: 부가세 10% */}
+                            {/* Column G: 부가세 10% */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-slate-450 bg-slate-50/10">
                               {formatKrw(fee.vat || 0)}
                             </td>
 
-                            {/* Column G: 지정 요율 */}
+                            {/* Column H: 지정 요율 */}
                             <td className="border-r border-slate-200 p-2 font-mono text-center text-slate-600 font-semibold bg-slate-50/15">
                               {fee.commissionRate}%
                             </td>
 
-                            {/* Column H: 영업 커미션 */}
+                            {/* Column I: 영업 커미션 */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-slate-850 font-bold bg-blue-50/5">
                               {formatKrw(fee.commission || 0)}
                             </td>
 
-                            {/* Column I: 사업소득세 3% */}
+                            {/* Column J: 사업소득세 3% */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-rose-600/90 bg-rose-50/5">
                               {formatKrw(fee.businessTax || 0)}
                             </td>
 
-                            {/* Column J: 주민세 0.3% */}
+                            {/* Column K: 주민세 0.3% */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-rose-600/80 bg-rose-50/5">
                               {formatKrw(fee.residentTax || 0)}
                             </td>
 
-                            {/* Column K: 실 지급 수수료 */}
+                            {/* Column L: 실 지급 수수료 */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-emerald-800 font-black bg-emerald-50/20">
                               {formatKrw(fee.calculatedFee)}
                             </td>
 
-                            {/* Column L: 정산상태 및 보류사유 */}
+                            {/* Column M: 정산상태 및 보류사유 */}
                             <td className="border-r border-slate-200 p-1 text-center min-w-[130px]">
                               <select
                                 value={fee.status || 'pending'}
@@ -977,7 +1020,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                       })
                     ) : (
                       <tr>
-                        <td colSpan={14} className="py-20 text-center text-slate-400 font-sans">
+                        <td colSpan={15} className="py-20 text-center text-slate-400 font-sans">
                           <Percent className="h-10 w-10 text-slate-200 mx-auto mb-3" />
                           일치하는 영업 지출 수수료 정산 명세가 지출 장부에 존재하지 않습니다.
                         </td>
@@ -1012,6 +1055,13 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                 <div>
                   <label className="block text-slate-500 font-bold mb-1">계약 체결 고객 사명 / 성함 *</label>
                   <input type="text" required value={newFee.customerName} onChange={e => setNewFee({...newFee, customerName: e.target.value})} placeholder="예. 한서화 미래융합 고등부" className="w-full border p-2.5 rounded-xl font-semibold" />
+                </div>
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">담당 코치 (선택 시 코치수수료 자동 연동)</label>
+                  <select value={newFee.coachName || '없음'} onChange={e => setNewFee({...newFee, coachName: e.target.value})} className="w-full border p-2.5 rounded-xl font-bold bg-white">
+                    <option value="없음">담당 코치 없음</option>
+                    {coachNames.map(name => <option key={name} value={name}>{name}</option>)}
+                  </select>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
