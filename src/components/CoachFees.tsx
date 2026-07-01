@@ -362,6 +362,7 @@ export default function CoachFees(props: CoachFeesProps) {
   const coachFees: CoachFeeItem[] = React.useMemo(() => {
     return (props.sales || [])
       .filter(sale => sale.coachName && sale.coachName !== '없음' && sale.coachName !== '')
+      .filter(sale => (sale.amount || 0) > 0) // 0원 매출은 반영/표시하지 않음
       .map(sale => {
         const matchingCoach = coaches.find(c => c.name === sale.coachName);
         const coachId = matchingCoach ? matchingCoach.id : 'c_fallback';

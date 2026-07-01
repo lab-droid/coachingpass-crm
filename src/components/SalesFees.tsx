@@ -176,6 +176,7 @@ export default function SalesFees(props: SalesFeesProps) {
   // Derive salesFees dynamically from props.sales in real-time
   const salesFees: SalesFeeItem[] = React.useMemo(() => {
     return props.sales
+      .filter(sale => (sale.amount || 0) > 0) // 0원 매출은 반영/표시하지 않음
       .map(sale => {
         const rawManager = sale.managerName;
         const noManager = !rawManager || rawManager === '배정 대기' || rawManager === '없음';
