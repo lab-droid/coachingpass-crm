@@ -227,7 +227,8 @@ export default function SalesFees(props: SalesFeesProps) {
           businessTax,
           residentTax,
           netFee,
-          coachName: sale.coachName || ''
+          coachName: sale.coachName || '',
+          product: sale.registeredService || (sale.imwebData?.items?.map(i => i.name).filter(Boolean).join(', ')) || ''
         };
       });
   }, [props.sales, salesManagersList]);
@@ -1011,17 +1012,18 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                       <th className="w-10 border-r border-slate-200 p-1">#</th>
                       <th className="w-40 border-r border-slate-200 p-1">A (결제일)</th>
                       <th className="w-32 border-r border-slate-200 p-1">B (수강생 이름)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">C (영업담당)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">D (담당코치)</th>
-                      <th className="w-32 border-r border-slate-200 p-1">E (DB유입)</th>
-                      <th className="w-32 border-r border-slate-200 p-1">F (총 결제 매출)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">G (부가세 10%)</th>
-                      <th className="w-20 border-r border-slate-200 p-1">H (요율)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">I (영업 커미션)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">J (사업소득세 3%)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">K (주민세 0.3%)</th>
-                      <th className="w-28 border-r border-slate-200 p-1">L (실 지급 수수료)</th>
-                      <th className="w-36 border-r border-slate-200 p-1">M (회계 전산 상태)</th>
+                      <th className="w-44 border-r border-slate-200 p-1">C (결제품목)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">D (영업담당)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">E (담당코치)</th>
+                      <th className="w-32 border-r border-slate-200 p-1">F (DB유입)</th>
+                      <th className="w-32 border-r border-slate-200 p-1">G (총 결제 매출)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">H (부가세 10%)</th>
+                      <th className="w-20 border-r border-slate-200 p-1">I (요율)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">J (영업 커미션)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">K (사업소득세 3%)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">L (주민세 0.3%)</th>
+                      <th className="w-28 border-r border-slate-200 p-1">M (실 지급 수수료)</th>
+                      <th className="w-36 border-r border-slate-200 p-1">N (회계 전산 상태)</th>
                       <th className="w-10 p-1">X</th>
                     </tr>
                     {/* Natural Row headers with descriptive details */}
@@ -1030,6 +1032,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                       <td className="p-2 border-r border-slate-200 font-mono">Row</td>
                       <td className="p-2 border-r border-slate-400">결제 완료일</td>
                       <td className="p-2 border-r border-slate-400">수강생 명세</td>
+                      <td className="p-2 border-r border-slate-400">결제 품목</td>
                       <td className="p-2 border-r border-slate-400">계약 영업담당</td>
                       <td className="p-2 border-r border-slate-400">담당 코치</td>
                       <td className="p-2 border-r border-slate-400">DB 형태구분</td>
@@ -1096,7 +1099,19 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               />
                             </td>
 
-                            {/* Column C: 영업담당 */}
+                            {/* Column C: 결제품목 */}
+                            <td className="border-r border-slate-200 p-1 font-sans">
+                              <input
+                                type="text"
+                                value={fee.product || ''}
+                                onChange={(e) => updateSaleProperty(fee.id, 'registeredService', e.target.value)}
+                                placeholder="결제품목"
+                                title={fee.product || ''}
+                                className="w-full text-left p-1 bg-transparent hover:bg-amber-50/40 border-0 outline-none text-slate-600 font-medium rounded truncate"
+                              />
+                            </td>
+
+                            {/* Column D: 영업담당 */}
                             <td className="border-r border-slate-200 p-1">
                               <select
                                 value={fee.managerName || '없음'}
@@ -1113,7 +1128,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               </select>
                             </td>
 
-                            {/* Column D: 담당코치 (syncs to 코치수수료) */}
+                            {/* Column E: 담당코치 (syncs to 코치수수료) */}
                             <td className="border-r border-slate-200 p-1">
                               <select
                                 value={fee.coachName || '없음'}
@@ -1132,7 +1147,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               </select>
                             </td>
 
-                            {/* Column E: DB유입 (Inquiry type) */}
+                            {/* Column F: DB유입 (Inquiry type) */}
                             <td className="border-r border-slate-200 p-1 text-center">
                               <select
                                 value={fee.inquiryType || 'corporate'}
@@ -1148,7 +1163,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               </select>
                             </td>
 
-                            {/* Column F: 체결 매출액 */}
+                            {/* Column G: 체결 매출액 */}
                             <td className="border-r border-slate-200 p-1 bg-slate-50/25">
                               <input 
                                 type="number"
@@ -1158,37 +1173,37 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               />
                             </td>
 
-                            {/* Column G: 부가세 10% */}
+                            {/* Column H: 부가세 10% */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-slate-450 bg-slate-50/10">
                               {formatKrw(fee.vat || 0)}
                             </td>
 
-                            {/* Column H: 지정 요율 */}
+                            {/* Column I: 지정 요율 */}
                             <td className="border-r border-slate-200 p-2 font-mono text-center text-slate-600 font-semibold bg-slate-50/15">
                               {fee.commissionRate}%
                             </td>
 
-                            {/* Column I: 영업 커미션 */}
+                            {/* Column J: 영업 커미션 */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-slate-850 font-bold bg-blue-50/5">
                               {formatKrw(fee.commission || 0)}
                             </td>
 
-                            {/* Column J: 사업소득세 3% */}
+                            {/* Column K: 사업소득세 3% */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-rose-600/90 bg-rose-50/5">
                               {formatKrw(fee.businessTax || 0)}
                             </td>
 
-                            {/* Column K: 주민세 0.3% */}
+                            {/* Column L: 주민세 0.3% */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-rose-600/80 bg-rose-50/5">
                               {formatKrw(fee.residentTax || 0)}
                             </td>
 
-                            {/* Column L: 실 지급 수수료 */}
+                            {/* Column M: 실 지급 수수료 */}
                             <td className="border-r border-slate-200 p-2 font-mono text-right text-emerald-800 font-black bg-emerald-50/20">
                               {formatKrw(fee.calculatedFee)}
                             </td>
 
-                            {/* Column M: 정산상태 및 보류사유 */}
+                            {/* Column N: 정산상태 및 보류사유 */}
                             <td className="border-r border-slate-200 p-1 text-center min-w-[130px]">
                               <select
                                 value={fee.status || 'pending'}
@@ -1233,7 +1248,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                       })
                     ) : (
                       <tr>
-                        <td colSpan={16} className="py-20 text-center text-slate-400 font-sans">
+                        <td colSpan={17} className="py-20 text-center text-slate-400 font-sans">
                           <Percent className="h-10 w-10 text-slate-200 mx-auto mb-3" />
                           일치하는 영업 지출 수수료 정산 명세가 지출 장부에 존재하지 않습니다.
                         </td>

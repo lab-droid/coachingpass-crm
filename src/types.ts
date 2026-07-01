@@ -146,4 +146,5 @@ export interface SalesFeeItem {
   netFee?: number;
   inquiryType?: 'personal' | 'corporate';
   coachName?: string;
+  product?: string; // 결제품목 (등록 서비스명)
 }
