@@ -8,9 +8,68 @@ import { motion } from 'motion/react';
 import { Server, ShieldCheck, AlertCircle, Sparkles, Lock, Mail, Eye, EyeOff, ExternalLink, Smartphone } from 'lucide-react';
 import { User, UserAccount } from '../types';
 import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
-import { collection, getDocs } from 'firebase/firestore';
+import { signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import logoUrl from '../assets/images/coachingpass_logo.png';
+
+// 데모/폴백용 기본 계정 (Firestore user_accounts가 비어있거나 오프라인일 때)
+const MOCK_ACCOUNTS = [
+  { email: 'sh.jung@coachingpass.com', password: 'password123', name: '정시훈', role: 'admin' as const, employeeId: 'emp_001' },
+  { email: 'yr.huh@coachingpass.com', password: 'password123', name: '허예령', role: 'admin' as const, employeeId: 'emp_002' },
+  { email: 'gm.oh@coachingpass.com', password: 'password123', name: '오근목', role: '영업팀' as const, employeeId: 'emp_003' },
+  { email: 'hr.seo@coachingpass.com', password: 'password123', name: '서헤림', role: '영업팀' as const, employeeId: 'emp_004' },
+  { email: 'coach_a@coachingpass.com', password: 'password123', name: '김코치', role: '코치' as const, employeeId: 'c_001' }
+];
+
+// Firebase Auth 인프라 문제(제공자 미활성/네트워크)로 판단되면 레거시 로그인으로 폴백해야 하는 에러코드
+const AUTH_FALLBACK_CODES = ['auth/operation-not-allowed', 'auth/network-request-failed', 'auth/internal-error', 'auth/configuration-not-found', 'auth/api-key-not-valid'];
+
+// user_accounts + 캐시 + 목업에서 email/password로 레거시 계정 조회
+async function findLegacyAccount(email: string, password: string): Promise<UserAccount | undefined> {
+  try {
+    const snap = await getDocs(collection(db, 'user_accounts'));
+    const accounts = snap.docs.map(d => d.data() as UserAccount);
+    if (accounts.length > 0) localStorage.setItem('cached_user_accounts', JSON.stringify(accounts));
+    const m = accounts.find(a => a.email.toLowerCase() === email && a.password === password);
+    if (m) return m;
+  } catch {
+    const cached = localStorage.getItem('cached_user_accounts');
+    if (cached) {
+      const m = (JSON.parse(cached) as UserAccount[]).find(a => a.email.toLowerCase() === email && a.password === password);
+      if (m) return m;
+    }
+  }
+  const mock = MOCK_ACCOUNTS.find(a => a.email.toLowerCase() === email && a.password === password);
+  if (mock) return { id: 'acc_mock_' + mock.employeeId, email: mock.email, password: mock.password, name: mock.name, role: mock.role, employeeId: mock.employeeId, status: 'active' };
+  return undefined;
+}
+
+// email만으로 계정 프로필(역할) 조회 (Auth로 신원 확인된 뒤 프로필 보강용)
+async function findAccountByEmail(email: string): Promise<{ name: string; role: UserAccount['role']; employeeId?: string } | undefined> {
+  try {
+    const snap = await getDocs(collection(db, 'user_accounts'));
+    const accounts = snap.docs.map(d => d.data() as UserAccount);
+    const m = accounts.find(a => a.email.toLowerCase() === email);
+    if (m) return { name: m.name, role: m.role, employeeId: m.employeeId };
+  } catch { /* ignore */ }
+  const mock = MOCK_ACCOUNTS.find(a => a.email.toLowerCase() === email);
+  if (mock) return { name: mock.name, role: mock.role, employeeId: mock.employeeId };
+  return undefined;
+}
+
+// users/{uid} 프로필을 읽고, 없으면 email로 보강 생성 (역할 판별용 · 보안 규칙에서 참조)
+async function loadOrCreateProfile(uid: string, email: string): Promise<{ name: string; role: UserAccount['role']; employeeId?: string }> {
+  const ref = doc(db, 'users', uid);
+  const snap = await getDoc(ref);
+  if (snap.exists()) {
+    const d = snap.data() as any;
+    return { name: d.name || email.split('@')[0], role: d.role || '코치', employeeId: d.employeeId };
+  }
+  const derived = await findAccountByEmail(email);
+  const profile = derived || { name: email.split('@')[0], role: '코치' as UserAccount['role'] };
+  try { await setDoc(ref, { email, ...profile }, { merge: true }); } catch { /* best-effort */ }
+  return profile;
+}
 
 interface LoginProps {
   onLoginSuccess: (user: User) => void;
@@ -109,7 +168,16 @@ export default function Login(props: LoginProps) {
         role: 'admin', // Google SSO defaults to Head admin
         avatarUrl: user.photoURL || undefined
       };
-      
+
+      // 보안 규칙에서 역할을 판별할 수 있도록 users/{uid} 프로필 기록 (best-effort)
+      try {
+        await setDoc(doc(db, 'users', user.uid), {
+          email: loggedInUser.email,
+          name: loggedInUser.name,
+          role: 'admin'
+        }, { merge: true });
+      } catch { /* non-blocking */ }
+
       localStorage.setItem('logged_in_user', JSON.stringify(loggedInUser));
       props.onLoginSuccess(loggedInUser);
     } catch (error: any) {
@@ -135,71 +203,81 @@ export default function Login(props: LoginProps) {
     setErrorCode(null);
     setIsLoading(true);
 
+    const email = emailId.trim().toLowerCase();
+
     try {
-      let matchedAccount: UserAccount | undefined = undefined;
+      // ── 1) Firebase Auth 경로 (단계적 이관) ─────────────────────────────
+      // 기존 사용자는 첫 로그인 시 Auth 계정으로 자동 이관(self-provisioning)된다.
+      // 인프라 미비(제공자 비활성 등)나 불확실한 실패 시 null을 반환해 레거시로 폴백.
+      let authResult: { id: string; profile: { name: string; role: UserAccount['role']; employeeId?: string } } | null = null;
 
-      // Try fetching accounts from Firestore
       try {
-        const querySnapshot = await getDocs(collection(db, 'user_accounts'));
-        const cloudAccounts = querySnapshot.docs.map(doc => doc.data() as UserAccount);
-        
-        // Cache them in localStorage in case of quota hit in future
-        if (cloudAccounts.length > 0) {
-          localStorage.setItem('cached_user_accounts', JSON.stringify(cloudAccounts));
+        try {
+          // (a) 이미 이관된 사용자
+          const cred = await signInWithEmailAndPassword(auth, email, password);
+          const profile = await loadOrCreateProfile(cred.user.uid, email);
+          authResult = { id: cred.user.uid, profile };
+        } catch (signInErr: any) {
+          const code = signInErr?.code || '';
+          if (AUTH_FALLBACK_CODES.includes(code)) {
+            authResult = null; // 인프라 미비 → 레거시 폴백
+          } else {
+            // (b) 아직 미이관 or 비번 상이 → 레거시 자격증명으로 검증 후 프로비저닝
+            const legacy = await findLegacyAccount(email, password);
+            if (!legacy) {
+              setErrorCode("일치하는 로그인 계정 정보가 없거나 비밀번호가 틀립니다.");
+              setIsLoading(false);
+              return;
+            }
+            if (legacy.status === 'inactive') {
+              setErrorCode("해당 계정은 시스템 운영자에 의해 정지(비활성화)된 계정입니다.");
+              setIsLoading(false);
+              return;
+            }
+            try {
+              const cred = await createUserWithEmailAndPassword(auth, email, password);
+              const profile = { name: legacy.name, role: legacy.role, employeeId: legacy.employeeId };
+              try { await setDoc(doc(db, 'users', cred.user.uid), { email, ...profile }, { merge: true }); } catch { /* best-effort */ }
+              authResult = { id: cred.user.uid, profile };
+            } catch (createErr: any) {
+              // email-already-in-use(비번 불일치) 또는 인프라 문제 → 레거시 로그인으로 폴백(락아웃 방지)
+              console.warn("Auth provisioning fell back to legacy login:", createErr?.code || createErr);
+              authResult = null;
+            }
+          }
         }
-
-        matchedAccount = cloudAccounts.find(
-          acc => acc.email.toLowerCase() === emailId.trim().toLowerCase() && acc.password === password
-        );
-      } catch (firestoreError) {
-        console.warn("Firestore user_accounts fetch failed (quota or offline), reading local fallback:", firestoreError);
-        const cached = localStorage.getItem('cached_user_accounts');
-        if (cached) {
-          const cachedAccounts = JSON.parse(cached) as UserAccount[];
-          matchedAccount = cachedAccounts.find(
-            acc => acc.email.toLowerCase() === emailId.trim().toLowerCase() && acc.password === password
-          );
-        }
+      } catch (authPathErr) {
+        console.warn("Auth path error, falling back to legacy:", authPathErr);
+        authResult = null;
       }
 
-      // Default mock users fallback if no accounts loaded/found
-      if (!matchedAccount) {
-        const allAccounts = [
-          { email: 'sh.jung@coachingpass.com', password: 'password123', name: '정시훈', role: 'admin' as const, employeeId: 'emp_001' },
-          { email: 'yr.huh@coachingpass.com', password: 'password123', name: '허예령', role: 'admin' as const, employeeId: 'emp_002' },
-          { email: 'gm.oh@coachingpass.com', password: 'password123', name: '오근목', role: '영업팀' as const, employeeId: 'emp_003' },
-          { email: 'hr.seo@coachingpass.com', password: 'password123', name: '서헤림', role: '영업팀' as const, employeeId: 'emp_004' },
-          { email: 'coach_a@coachingpass.com', password: 'password123', name: '김코치', role: '코치' as const, employeeId: 'c_001' }
-        ];
-        const matched = allAccounts.find(
-          a => a.email.toLowerCase() === emailId.trim().toLowerCase() && a.password === password
-        );
-        if (matched) {
-          matchedAccount = {
-            id: 'acc_mock_' + matched.employeeId,
-            email: matched.email,
-            password: matched.password,
-            name: matched.name,
-            role: matched.role,
-            employeeId: matched.employeeId,
-            status: 'active'
-          };
-        }
+      if (authResult) {
+        const loggedInUser: User = {
+          id: authResult.id,
+          email,
+          name: authResult.profile.name,
+          role: authResult.profile.role,
+          employeeId: authResult.profile.employeeId
+        };
+        localStorage.setItem('logged_in_user', JSON.stringify(loggedInUser));
+        props.onLoginSuccess(loggedInUser);
+        return;
       }
+
+      // ── 2) 레거시 경로 (폴백, 기존 동작 유지) ───────────────────────────
+      const matchedAccount = await findLegacyAccount(email, password);
 
       if (!matchedAccount) {
         setErrorCode("일치하는 로그인 계정 정보가 없거나 비밀번호가 틀립니다.");
         setIsLoading(false);
         return;
       }
-
       if (matchedAccount.status === 'inactive') {
         setErrorCode("해당 계정은 시스템 운영자에 의해 정지(비활성화)된 계정입니다.");
         setIsLoading(false);
         return;
       }
 
-      // Success
       const loggedInUser: User = {
         id: matchedAccount.id,
         email: matchedAccount.email,
@@ -207,7 +285,6 @@ export default function Login(props: LoginProps) {
         role: matchedAccount.role,
         employeeId: matchedAccount.employeeId
       };
-
       localStorage.setItem('logged_in_user', JSON.stringify(loggedInUser));
       props.onLoginSuccess(loggedInUser);
     } catch (err: any) {
