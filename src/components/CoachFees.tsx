@@ -209,11 +209,26 @@ export default function CoachFees(props: CoachFeesProps) {
       const selected = coaches.find(c => c.id === newFee.coachId);
       if (selected) {
         const method = newFee.coachingMethod || '대면';
+        const hours = newFee.coachingHours || 1;
+        const salesAmt = newFee.salesAmount || 0;
+
+        // 혼합: 대면/비대면 시간 × 각 요율 합산
+        if (method === '혼합') {
+          const { faceRate, onlineRate } = getMixedUnitRates(selected.name);
+          const fh = newFee.faceHours || 0;
+          const oh = newFee.onlineHours || 0;
+          setNewFee(prev => ({
+            ...prev,
+            calculationType: 'tariff',
+            feeRate: 0,
+            calculatedFee: faceRate * fh + onlineRate * oh
+          }));
+          return;
+        }
+
         const tariffMatch = tariffs.find(
           t => t.coachName === selected.name && t.method === method
         );
-        const hours = newFee.coachingHours || 1;
-        const salesAmt = newFee.salesAmount || 0;
 
         if (tariffMatch) {
           if (tariffMatch.feeAmount !== undefined) {
@@ -245,7 +260,7 @@ export default function CoachFees(props: CoachFeesProps) {
         }
       }
     }
-  }, [newFee.coachId, newFee.coachingMethod, newFee.coachingHours, newFee.salesAmount, coaches, tariffs]);
+  }, [newFee.coachId, newFee.coachingMethod, newFee.coachingHours, newFee.salesAmount, newFee.faceHours, newFee.onlineHours, coaches, tariffs]);
 
   const showToast = (msg: string) => {
     setSuccessToast(msg);
@@ -260,10 +275,28 @@ export default function CoachFees(props: CoachFeesProps) {
     }).format(value);
   };
 
+  // 혼합 코칭 시간당 단가 조회 (대면/비대면 요율)
+  const getMixedUnitRates = (coachName: string) => {
+    const faceMatch = tariffs.find(t => t.coachName === coachName && t.method === '대면');
+    const onlineMatch = tariffs.find(t => t.coachName === coachName && t.method === '비대면');
+    return {
+      faceRate: faceMatch?.feeAmount || 0,
+      onlineRate: onlineMatch?.feeAmount || 0
+    };
+  };
+
   // Calculate coached fee based on criteria (tariff table or tier percentage)
-  const calculateFeeForCoach = (coachName: string, salesAmount: number, coachingHours: number, coachingMethod: string = '대면') => {
+  const calculateFeeForCoach = (coachName: string, salesAmount: number, coachingHours: number, coachingMethod: string = '대면', faceHours: number = 0, onlineHours: number = 0) => {
     const hours = coachingHours || 1;
     const salesAmt = salesAmount || 0;
+
+    // 0. 혼합: 대면/비대면 시간을 각각의 요율로 합산 정산
+    if (coachingMethod === '혼합') {
+      const { faceRate, onlineRate } = getMixedUnitRates(coachName);
+      const mixed = faceRate * (faceHours || 0) + onlineRate * (onlineHours || 0);
+      if (mixed > 0) return mixed;
+      // 요율이 없으면 아래 일반 로직으로 폴백
+    }
 
     // 1. Try exact coachName and coachingMethod match
     let tariffMatch = tariffs.find(
@@ -314,10 +347,12 @@ export default function CoachFees(props: CoachFeesProps) {
         const coachId = matchingCoach ? matchingCoach.id : 'c_fallback';
         
         // Smart fallback / inference for coachingMethod
-        let method: '대면' | '비대면' | '통합' | '대입' = sale.coachingMethod || '대면';
+        let method: '대면' | '비대면' | '통합' | '대입' | '혼합' = sale.coachingMethod || '대면';
         if (!sale.coachingMethod) {
           const svc = (sale.registeredService || '').toLowerCase();
-          if (svc.includes('비대면') || svc.includes('온라인') || svc.includes('online')) {
+          if (svc.includes('혼합')) {
+            method = '혼합';
+          } else if (svc.includes('비대면') || svc.includes('온라인') || svc.includes('online')) {
             method = '비대면';
           } else if (svc.includes('대입') || svc.includes('입시')) {
             method = '대입';
@@ -326,14 +361,20 @@ export default function CoachFees(props: CoachFeesProps) {
           }
         }
 
+        const faceHours = sale.faceHours || 0;
+        const onlineHours = sale.onlineHours || 0;
+        const totalHours = method === '혼합' ? (faceHours + onlineHours) : (sale.coachingHours || 1);
+
         const hasOverride = sale.coachFeeOverride !== undefined && sale.coachFeeOverride !== null;
         const calculated = hasOverride
           ? (sale.coachFeeOverride as number)
           : calculateFeeForCoach(
               sale.coachName || '없음',
               sale.amount || 0,
-              sale.coachingHours || 1,
-              method
+              totalHours,
+              method,
+              faceHours,
+              onlineHours
             );
 
         return {
@@ -348,8 +389,10 @@ export default function CoachFees(props: CoachFeesProps) {
           status: sale.status || 'pending',
           payoutDate: sale.status === 'completed' ? (sale.registrationDate || sale.date.substring(0, 10)) : undefined,
           salesId: sale.id,
-          coachingHours: sale.coachingHours || 1,
+          coachingHours: totalHours,
           coachingMethod: method,
+          faceHours,
+          onlineHours,
           coachFeeOverride: sale.coachFeeOverride,
           managerName: sale.managerName || ''
         };
@@ -429,15 +472,19 @@ export default function CoachFees(props: CoachFeesProps) {
     const isTariff = newFee.calculationType === 'tariff';
     const rate = isTariff ? 0 : (Number(newFee.feeRate) || 15);
     const salesAmt = Number(newFee.salesAmount) || 0;
-    const hours = Number(newFee.coachingHours) || 1;
-    
-    const calcFee = isTariff 
+    const method = (newFee.coachingMethod as any) || '대면';
+    const isMixed = method === '혼합';
+    const faceHours = Number(newFee.faceHours) || 0;
+    const onlineHours = Number(newFee.onlineHours) || 0;
+    const hours = isMixed ? (faceHours + onlineHours) : (Number(newFee.coachingHours) || 1);
+
+    const calcFee = isTariff
       ? (Number(newFee.calculatedFee) || 0)
       : Math.round(salesAmt * (rate / 100));
 
     const saleId = `cf_sale_${Date.now()}`;
     const defaultManager = employees.find(emp => emp.role === '영업팀' && emp.status === 'active')?.name || '이지원';
-    
+
     // Create corresponding sale entry
     const saleItem: Sale = {
       id: saleId,
@@ -445,6 +492,7 @@ export default function CoachFees(props: CoachFeesProps) {
       customerName: newFee.customerName,
       managerName: newFee.managerName || defaultManager,
       coachName: selected.name,
+      coachingMethod: method,
       amount: salesAmt,
       feeRate: 10,
       fee: Math.round((salesAmt / 1.1) * 0.1),
@@ -452,9 +500,11 @@ export default function CoachFees(props: CoachFeesProps) {
       status: (newFee.status as any) || 'pending',
       inquiryType: 'corporate',
       coachingHours: hours,
+      coachFeeOverride: calcFee,
       registrationDate: new Date().toISOString().split('T')[0],
       registeredService: '1:1 매칭 전문가 코칭 패키지',
-      notes: '코치 수수료 탭 수기 매칭 등록'
+      notes: '코치 수수료 탭 수기 매칭 등록',
+      ...(isMixed ? { faceHours, onlineHours } : {})
     };
 
     try {
@@ -464,7 +514,7 @@ export default function CoachFees(props: CoachFeesProps) {
         await setDoc(doc(db, 'sales', saleId), saleItem);
       }
       setIsFeeModalOpen(false);
-      setNewFee({ coachId: '', customerName: '', salesAmount: 0, feeRate: 20, status: 'pending', coachingMethod: '대면', calculationType: 'tariff', coachingHours: 1, salesId: undefined });
+      setNewFee({ coachId: '', customerName: '', salesAmount: 0, feeRate: 20, status: 'pending', coachingMethod: '대면', calculationType: 'tariff', coachingHours: 1, faceHours: 0, onlineHours: 0, salesId: undefined });
       showToast(`${selected.name} 코치 수당 (${formatKrw(calcFee)}) 및 매출 전표가 연동 계정으로 안전하게 등록되었습니다.`);
     } catch (err) {
       console.error("Failed to add coach fee as sale:", err);
@@ -630,6 +680,22 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
         updatedFields.coachFeeOverride = null;
       } else if (field === 'coachingMethod') {
         updatedFields.coachingMethod = value as any;
+        // Reset manual override to trigger recalculation of tariff
+        updatedFields.coachFeeOverride = null;
+        // 혼합 전환 시 대면/비대면 시간 초기화 (기존값 없으면 총 시간을 대면으로 배정)
+        if (value === '혼합') {
+          const fh = existingSale.faceHours ?? existingSale.coachingHours ?? 1;
+          const oh = existingSale.onlineHours ?? 0;
+          updatedFields.faceHours = fh;
+          updatedFields.onlineHours = oh;
+          updatedFields.coachingHours = fh + oh;
+        }
+      } else if (field === 'faceHours' || field === 'onlineHours') {
+        const fh = field === 'faceHours' ? (Number(value) || 0) : (existingSale.faceHours || 0);
+        const oh = field === 'onlineHours' ? (Number(value) || 0) : (existingSale.onlineHours || 0);
+        updatedFields.faceHours = fh;
+        updatedFields.onlineHours = oh;
+        updatedFields.coachingHours = fh + oh;
         // Reset manual override to trigger recalculation of tariff
         updatedFields.coachFeeOverride = null;
       } else if (field === 'customerName') {
@@ -1066,7 +1132,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                       <th className="p-3 border-r border-slate-200 min-w-[140px]">수강생명</th>
                       <th className="p-3 border-r border-slate-200 min-w-[140px] text-center">등록일</th>
                       <th className="p-3 border-r border-slate-200 min-w-[130px]">영업담당</th>
-                      <th className="p-3 border-r border-slate-200 min-w-[90px] text-center">코칭시간</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[120px] text-center">코칭시간</th>
                       <th className="p-3 border-r border-slate-200 min-w-[155px] text-right">코칭수수료</th>
                       <th className="p-3 border-r border-slate-200 min-w-[165px] text-right">매출액</th>
                       <th className="p-3 border-r border-slate-200 min-w-[110px] text-center">정산상태</th>
@@ -1132,6 +1198,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                                 >
                                   <option value="대면">대면</option>
                                   <option value="비대면">비대면</option>
+                                  <option value="혼합">혼합</option>
                                   <option value="통합">통합</option>
                                   <option value="대입">대입</option>
                                 </select>
@@ -1177,16 +1244,46 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                                 </select>
                               </td>
 
-                              {/* 5. 코칭시간 */}
+                              {/* 5. 코칭시간 (혼합 시 대면/비대면 분리 입력) */}
                               <td className="p-1 border-r border-slate-200 text-center bg-white">
-                                <input
-                                  type="number"
-                                  min={1}
-                                  key={`${fee.id}_hours_${fee.coachingHours}`}
-                                  defaultValue={fee.coachingHours || 1}
-                                  onBlur={(e) => handleCellChange(fee, 'coachingHours', Number(e.target.value))}
-                                  className="w-full bg-transparent p-1 text-center font-mono focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-805 text-xs"
-                                />
+                                {fee.coachingMethod === '혼합' ? (
+                                  <div className="flex flex-col space-y-1">
+                                    <div className="flex items-center space-x-1">
+                                      <span className="text-[9px] font-bold text-emerald-600 shrink-0 w-8 text-left">대면</span>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        key={`${fee.id}_fh_${fee.faceHours}`}
+                                        defaultValue={fee.faceHours || 0}
+                                        onBlur={(e) => handleCellChange(fee, 'faceHours', Number(e.target.value))}
+                                        className="w-full bg-transparent p-1 text-center font-mono focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-805 text-xs"
+                                      />
+                                    </div>
+                                    <div className="flex items-center space-x-1">
+                                      <span className="text-[9px] font-bold text-amber-600 shrink-0 w-8 text-left">비대면</span>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        key={`${fee.id}_oh_${fee.onlineHours}`}
+                                        defaultValue={fee.onlineHours || 0}
+                                        onBlur={(e) => handleCellChange(fee, 'onlineHours', Number(e.target.value))}
+                                        className="w-full bg-transparent p-1 text-center font-mono focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-500 rounded font-bold text-slate-805 text-xs"
+                                      />
+                                    </div>
+                                    <div className="text-[9px] text-slate-400 font-semibold text-center border-t border-slate-100 pt-0.5">
+                                      계 {(fee.faceHours || 0) + (fee.onlineHours || 0)}시간
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    key={`${fee.id}_hours_${fee.coachingHours}`}
+                                    defaultValue={fee.coachingHours || 1}
+                                    onBlur={(e) => handleCellChange(fee, 'coachingHours', Number(e.target.value))}
+                                    className="w-full bg-transparent p-1 text-center font-mono focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-805 text-xs"
+                                  />
+                                )}
                               </td>
 
                               {/* 6. 코칭수수료 (Calculated automatically, editable manually) */}
@@ -1204,6 +1301,14 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                                   </div>
                                   {/* 시간당 단가 정보 표시 */}
                                   {(() => {
+                                    if (fee.coachingMethod === '혼합') {
+                                      const { faceRate, onlineRate } = getMixedUnitRates(fee.coachName);
+                                      return (
+                                        <div className="text-[9px] text-slate-400 font-medium text-right pr-4 mt-0.5">
+                                          (대면 {formatKrw(faceRate)} / 비대면 {formatKrw(onlineRate)})
+                                        </div>
+                                      );
+                                    }
                                     const match = tariffs.find(
                                       t => t.coachName === fee.coachName && t.method === (fee.coachingMethod || '대면')
                                     );
@@ -1600,14 +1705,19 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                       const foundSale = props.sales.find(s => s.id === saleId);
                       if (foundSale) {
                         const matchedCoach = coaches.find(c => c.name === foundSale.coachName);
-                        let method = '대면';
-                        const svc = (foundSale.registeredService || '').toLowerCase();
-                        if (svc.includes('비대면') || svc.includes('온라인') || svc.includes('online') || svc.includes('zoom')) {
-                          method = '비대면';
-                        } else if (svc.includes('대입') || svc.includes('입시') || svc.includes('입학')) {
-                          method = '대입';
-                        } else if (svc.includes('통합') || svc.includes('종합')) {
-                          method = '통합';
+                        // 전표에 저장된 코칭방식을 우선 사용, 없으면 서비스명으로 추론
+                        let method: string = foundSale.coachingMethod || '대면';
+                        if (!foundSale.coachingMethod) {
+                          const svc = (foundSale.registeredService || '').toLowerCase();
+                          if (svc.includes('혼합')) {
+                            method = '혼합';
+                          } else if (svc.includes('비대면') || svc.includes('온라인') || svc.includes('online') || svc.includes('zoom')) {
+                            method = '비대면';
+                          } else if (svc.includes('대입') || svc.includes('입시') || svc.includes('입학')) {
+                            method = '대입';
+                          } else if (svc.includes('통합') || svc.includes('종합')) {
+                            method = '통합';
+                          }
                         }
 
                         setNewFee(prev => ({
@@ -1616,6 +1726,8 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                           customerName: foundSale.customerName,
                           salesAmount: foundSale.amount,
                           coachingHours: foundSale.coachingHours || 1,
+                          faceHours: foundSale.faceHours || 0,
+                          onlineHours: foundSale.onlineHours || 0,
                           coachId: matchedCoach ? matchedCoach.id : prev.coachId,
                           coachingMethod: method
                         }));
@@ -1648,7 +1760,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                   </div>
                   <div>
                     <label className="block text-slate-500 font-bold mb-1">코칭 시간 (회차/시간) *</label>
-                    <input type="number" required min={1} value={newFee.coachingHours || 1} onChange={e => setNewFee({...newFee, coachingHours: Math.max(1, Number(e.target.value))})} className="w-full border p-2.5 rounded-xl font-bold font-mono" />
+                    <input type="number" required={newFee.coachingMethod !== '혼합'} disabled={newFee.coachingMethod === '혼합'} min={1} value={newFee.coachingMethod === '혼합' ? ((newFee.faceHours || 0) + (newFee.onlineHours || 0)) : (newFee.coachingHours || 1)} onChange={e => setNewFee({...newFee, coachingHours: Math.max(1, Number(e.target.value))})} className="w-full border p-2.5 rounded-xl font-bold font-mono disabled:bg-slate-100 disabled:text-slate-500" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -1658,6 +1770,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                       <option value="통합">통합</option>
                       <option value="대면">대면</option>
                       <option value="비대면">비대면</option>
+                      <option value="혼합">혼합 (대면+비대면)</option>
                       <option value="대입">대입</option>
                     </select>
                   </div>
@@ -1669,6 +1782,22 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                     </select>
                   </div>
                 </div>
+
+                {newFee.coachingMethod === '혼합' && (
+                  <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-slate-50 border border-slate-150">
+                    <div>
+                      <label className="block text-emerald-600 font-bold mb-1">대면 시간 *</label>
+                      <input type="number" min={0} value={newFee.faceHours || 0} onChange={e => setNewFee({...newFee, faceHours: Math.max(0, Number(e.target.value))})} className="w-full border p-2.5 rounded-xl font-bold font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-amber-600 font-bold mb-1">비대면 시간 *</label>
+                      <input type="number" min={0} value={newFee.onlineHours || 0} onChange={e => setNewFee({...newFee, onlineHours: Math.max(0, Number(e.target.value))})} className="w-full border p-2.5 rounded-xl font-bold font-mono" />
+                    </div>
+                    <p className="col-span-2 text-[10px] text-slate-500 font-medium">
+                      대면·비대면 시간에 각 요율을 적용해 수수료가 자동 합산됩니다. (총 {(newFee.faceHours || 0) + (newFee.onlineHours || 0)}시간)
+                    </p>
+                  </div>
+                )}
 
                 {newFee.calculationType === 'tariff' ? (
                   <div className="grid grid-cols-2 gap-3">

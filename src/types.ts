@@ -37,9 +37,11 @@ export interface Sale {
   inquiryType?: 'personal' | 'corporate'; // 개인문의, 회사문의
   inquiryDate?: string;
   coachName?: string;
-  coachingMethod?: '통합' | '대면' | '비대면' | '대입';
+  coachingMethod?: '통합' | '대면' | '비대면' | '대입' | '혼합';
   registeredService?: string;
   coachingHours?: number;
+  faceHours?: number;   // 혼합 코칭 시 대면 시간
+  onlineHours?: number; // 혼합 코칭 시 비대면 시간
   registrationDate?: string;
   isManagerManuallyEdited?: boolean;
   coachFeeOverride?: number | null;
@@ -116,7 +118,9 @@ export interface CoachFeeItem {
   payoutDate?: string;
   salesId?: string;
   coachingHours?: number;
-  coachingMethod?: '통합' | '대면' | '비대면' | '대입';
+  coachingMethod?: '통합' | '대면' | '비대면' | '대입' | '혼합';
+  faceHours?: number;   // 혼합 코칭 시 대면 시간
+  onlineHours?: number; // 혼합 코칭 시 비대면 시간
   managerName?: string;
   coachFeeOverride?: number | null;
 }
