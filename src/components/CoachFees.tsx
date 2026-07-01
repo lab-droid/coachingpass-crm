@@ -1154,7 +1154,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                         const matchesMonth = ledgerMonthFilter === 'all' || fee.date.startsWith(ledgerMonthFilter);
 
                         return matchesSearch && matchesCoach && matchesStatus && matchesManager && matchesMonth;
-                      });
+                      }).sort((a, b) => b.date.localeCompare(a.date)); // 최신 날짜가 위, 오래된 순으로 정렬
 
                       if (list.length === 0) {
                         return (

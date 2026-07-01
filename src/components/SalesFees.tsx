@@ -230,7 +230,7 @@ export default function SalesFees(props: SalesFeesProps) {
       const matchesCoach = coachFilter === 'all' || fee.coachName === coachFilter;
 
       return matchesSearch && matchesStatus && matchesMonth && matchesCoach;
-    });
+    }).sort((a, b) => b.date.localeCompare(a.date)); // 최신 날짜가 위, 오래된 순으로 정렬
   }, [activeManagerFees, searchQuery, statusFilter, monthFilter, coachFilter]);
 
   // Toggle Inquiry Type function
@@ -583,7 +583,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
           <div>
             <span className="text-xs font-semibold text-slate-400 block uppercase tracking-wider">누적 전체 영업 정산금</span>
             <strong className="text-xl font-bold font-mono text-slate-905 block mt-0.5">{formatKrw(grandTotalFees)}</strong>
-            <span className="text-[10px] text-slate-400 block mt-1">영업 성사 매니저 {salesManagersList.length}명 활동 중</span>
+            <span className="text-[10px] text-slate-400 block mt-1">영업 담당자 {salesManagersList.length}명 활동 중</span>
           </div>
         </div>
       </div>
@@ -630,7 +630,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                         {m.name.charAt(0)}
                       </div>
                       <div>
-                        <span className="font-bold text-sm block tracking-tight">{m.name} 매니저</span>
+                        <span className="font-bold text-sm block tracking-tight">{m.name}</span>
                         <span className={`text-[10px] ${isSelected ? 'text-slate-450' : 'text-slate-400'}`}>{m.department} | {m.currentTier} 등급</span>
                       </div>
                     </div>
@@ -704,7 +704,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
               <div>
                 <h3 className="text-base font-bold text-slate-900 tracking-tight">
-                  {selectedManagerName ? `${selectedManagerName} 매니저 영업 수수료 세목` : '영업 지출 청구서 명세 대장'}
+                  {selectedManagerName ? `${selectedManagerName} 영업 수수료 세목` : '영업 지출 청구서 명세 대장'}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">영업 성사 건별 지정된 커미션 요율 자동 대조 및 원천세 증빙 관리</p>
               </div>
@@ -760,7 +760,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="수강생명, 매니저명 검색..."
+                    placeholder="수강생명, 영업담당 검색..."
                     className="pl-8.5 pr-3 py-1.5 text-xs border border-slate-200 rounded-xl w-full focus:outline-none focus:ring-1 focus:ring-emerald-500 font-sans font-medium bg-white text-slate-800"
                   />
                 </div>
@@ -890,7 +890,9 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                               <select
                                 value={fee.managerName || '없음'}
                                 onChange={(e) => updateSaleProperty(fee.id, 'managerName', e.target.value)}
-                                className="w-full border-0 outline-none bg-transparent cursor-pointer p-1 font-bold rounded text-slate-750 text-center text-xs"
+                                className={`w-full border-0 outline-none bg-transparent cursor-pointer p-1 font-bold rounded text-center text-xs ${
+                                  (!fee.managerName || fee.managerName === '없음') ? 'text-rose-600' : 'text-slate-750'
+                                }`}
                               >
                                 {salesManagersList.map((rep) => (
                                   <option key={rep.id} value={rep.name}>{rep.name}</option>
@@ -906,7 +908,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                                 value={fee.coachName || '없음'}
                                 onChange={(e) => updateSaleProperty(fee.id, 'coachName', e.target.value)}
                                 className={`w-full border-0 outline-none bg-transparent cursor-pointer p-1 font-bold rounded text-center text-xs ${
-                                  fee.coachName && fee.coachName !== '없음' ? 'text-emerald-700' : 'text-slate-400'
+                                  fee.coachName && fee.coachName !== '없음' ? 'text-emerald-700' : 'text-rose-600'
                                 }`}
                               >
                                 <option value="없음">없음</option>
