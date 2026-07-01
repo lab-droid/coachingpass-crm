@@ -5,93 +5,34 @@
 
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Server, ShieldCheck, AlertCircle, Sparkles, Lock, Mail, Eye, EyeOff, ExternalLink, Smartphone, Hash, ArrowLeft, CheckCircle2 } from 'lucide-react';
-import { User, UserAccount } from '../types';
+import { Server, ShieldCheck, AlertCircle, Lock, Eye, EyeOff, ExternalLink, Smartphone, Hash } from 'lucide-react';
+import { User, Employee } from '../types';
 import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
-import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
+import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { collection, getDocs } from 'firebase/firestore';
 import logoUrl from '../assets/images/coachingpass_logo.png';
 
-// 데모/폴백용 기본 계정 (Firestore user_accounts가 비어있거나 오프라인일 때)
-const MOCK_ACCOUNTS = [
-  { email: 'sh.jung@coachingpass.com', password: 'password123', name: '정시훈', role: 'admin' as const, employeeId: 'emp_001' },
-  { email: 'yr.huh@coachingpass.com', password: 'password123', name: '허예령', role: 'admin' as const, employeeId: 'emp_002' },
-  { email: 'gm.oh@coachingpass.com', password: 'password123', name: '오근목', role: '영업팀' as const, employeeId: 'emp_003' },
-  { email: 'hr.seo@coachingpass.com', password: 'password123', name: '서헤림', role: '영업팀' as const, employeeId: 'emp_004' },
-  { email: 'coach_a@coachingpass.com', password: 'password123', name: '김코치', role: '코치' as const, employeeId: 'c_001' }
-];
+// 임직원 직무(role)를 앱 사용자 권한으로 매핑
+const mapEmployeeRole = (role?: string): User['role'] => {
+  if (role === '임원' || role === '관리자') return 'admin';
+  if (role === '영업팀') return '영업팀';
+  return '코치';
+};
 
-// Firebase Auth 인프라 문제(제공자 미활성/네트워크)로 판단되면 레거시 로그인으로 폴백해야 하는 에러코드
-const AUTH_FALLBACK_CODES = ['auth/operation-not-allowed', 'auth/network-request-failed', 'auth/internal-error', 'auth/configuration-not-found', 'auth/api-key-not-valid'];
-
-// 로그인 ID(사번 또는 이메일)를 실제 로그인 이메일로 해석하고, 퇴사 여부를 함께 반환.
-// - 이메일 입력: 그대로 사용(임직원이면 퇴사 여부 확인)
-// - 사번 입력: 임직원 목록에서 employeeNumber로 이메일을 찾음(없으면 null)
-async function resolveLoginId(input: string): Promise<{ email: string; resigned: boolean } | null> {
-  const trimmed = (input || '').trim();
-  if (!trimmed) return null;
-  const isEmail = trimmed.includes('@');
+// 임직원 목록을 Firestore에서 로드(실패 시 로컬 캐시 사용)
+async function loadEmployees(): Promise<Employee[]> {
   try {
     const snap = await getDocs(collection(db, 'employees'));
-    const emps = snap.docs.map(d => d.data() as any);
-    const emp = isEmail
-      ? emps.find(e => (e.email || '').toLowerCase() === trimmed.toLowerCase())
-      : emps.find(e => (e.employeeNumber || '').toUpperCase() === trimmed.toUpperCase());
-    const email = isEmail ? trimmed.toLowerCase() : (emp?.email || '').toLowerCase();
-    if (!email) return null; // 사번을 찾지 못함
-    const resigned = !!emp && (emp.status === 'resigned' || emp.status === 'inactive');
-    return { email, resigned };
+    const emps = snap.docs.map(d => d.data() as Employee);
+    if (emps.length > 0) localStorage.setItem('cached_employees', JSON.stringify(emps));
+    return emps;
   } catch {
-    // Firestore 조회 실패(오프라인 등): 이메일 입력은 그대로 사용, 사번은 해석 불가
-    return isEmail ? { email: trimmed.toLowerCase(), resigned: false } : null;
-  }
-}
-
-// user_accounts + 캐시 + 목업에서 email/password로 레거시 계정 조회
-async function findLegacyAccount(email: string, password: string): Promise<UserAccount | undefined> {
-  try {
-    const snap = await getDocs(collection(db, 'user_accounts'));
-    const accounts = snap.docs.map(d => d.data() as UserAccount);
-    if (accounts.length > 0) localStorage.setItem('cached_user_accounts', JSON.stringify(accounts));
-    const m = accounts.find(a => a.email.toLowerCase() === email && a.password === password);
-    if (m) return m;
-  } catch {
-    const cached = localStorage.getItem('cached_user_accounts');
+    const cached = localStorage.getItem('cached_employees');
     if (cached) {
-      const m = (JSON.parse(cached) as UserAccount[]).find(a => a.email.toLowerCase() === email && a.password === password);
-      if (m) return m;
+      try { return JSON.parse(cached) as Employee[]; } catch { /* ignore */ }
     }
+    return [];
   }
-  const mock = MOCK_ACCOUNTS.find(a => a.email.toLowerCase() === email && a.password === password);
-  if (mock) return { id: 'acc_mock_' + mock.employeeId, email: mock.email, password: mock.password, name: mock.name, role: mock.role, employeeId: mock.employeeId, status: 'active' };
-  return undefined;
-}
-
-// email만으로 계정 프로필(역할) 조회 (Auth로 신원 확인된 뒤 프로필 보강용)
-async function findAccountByEmail(email: string): Promise<{ name: string; role: UserAccount['role']; employeeId?: string } | undefined> {
-  try {
-    const snap = await getDocs(collection(db, 'user_accounts'));
-    const accounts = snap.docs.map(d => d.data() as UserAccount);
-    const m = accounts.find(a => a.email.toLowerCase() === email);
-    if (m) return { name: m.name, role: m.role, employeeId: m.employeeId };
-  } catch { /* ignore */ }
-  const mock = MOCK_ACCOUNTS.find(a => a.email.toLowerCase() === email);
-  if (mock) return { name: mock.name, role: mock.role, employeeId: mock.employeeId };
-  return undefined;
-}
-
-// users/{uid} 프로필을 읽고, 없으면 email로 보강 생성 (역할 판별용 · 보안 규칙에서 참조)
-async function loadOrCreateProfile(uid: string, email: string): Promise<{ name: string; role: UserAccount['role']; employeeId?: string }> {
-  const ref = doc(db, 'users', uid);
-  const snap = await getDoc(ref);
-  if (snap.exists()) {
-    const d = snap.data() as any;
-    return { name: d.name || email.split('@')[0], role: d.role || '코치', employeeId: d.employeeId };
-  }
-  const derived = await findAccountByEmail(email);
-  const profile = derived || { name: email.split('@')[0], role: '코치' as UserAccount['role'] };
-  try { await setDoc(ref, { email, ...profile }, { merge: true }); } catch { /* best-effort */ }
-  return profile;
 }
 
 interface LoginProps {
@@ -159,56 +100,10 @@ export default function Login(props: LoginProps) {
   const inAppBrowser = detectInAppBrowser();
   const isIOS = isIOSDevice();
 
-  // Email/Password states
+  // 사번/비밀번호 states
   const [emailId, setEmailId] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-
-  // 비밀번호 찾기(이메일 재설정) 상태
-  const [showForgot, setShowForgot] = useState(false);
-  const [forgotId, setForgotId] = useState('');
-  const [forgotSending, setForgotSending] = useState(false);
-  const [forgotMsg, setForgotMsg] = useState<string | null>(null);
-  const [forgotIsError, setForgotIsError] = useState(false);
-
-  const handleForgotPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setForgotMsg(null);
-    setForgotIsError(false);
-    const input = forgotId.trim();
-    if (!input) {
-      setForgotIsError(true);
-      setForgotMsg('사번 또는 이메일을 입력해 주세요.');
-      return;
-    }
-    setForgotSending(true);
-    try {
-      const resolved = await resolveLoginId(input);
-      if (!resolved || !resolved.email) {
-        setForgotIsError(true);
-        setForgotMsg('해당 사번 또는 이메일의 계정을 찾을 수 없습니다.');
-        setForgotSending(false);
-        return;
-      }
-      await sendPasswordResetEmail(auth, resolved.email);
-      setForgotIsError(false);
-      setForgotMsg(`${resolved.email} 로 비밀번호 재설정 메일을 보냈습니다. 메일함(스팸함 포함)을 확인해 주세요.`);
-    } catch (err: any) {
-      const code = err?.code || '';
-      setForgotIsError(true);
-      if (code === 'auth/user-not-found') {
-        setForgotMsg('아직 최초 로그인을 하지 않은 계정입니다. 관리자에게 초기 비밀번호를 문의하세요.');
-      } else if (code === 'auth/operation-not-allowed' || code === 'auth/configuration-not-found') {
-        setForgotMsg('이메일 재설정 기능이 비활성화되어 있습니다. 관리자에게 문의하세요.');
-      } else if (code === 'auth/invalid-email') {
-        setForgotMsg('이메일 형식이 올바르지 않습니다.');
-      } else {
-        setForgotMsg('재설정 메일 발송에 실패했습니다: ' + (err?.message || code));
-      }
-    } finally {
-      setForgotSending(false);
-    }
-  };
 
   const handleGoogleLogin = async () => {
     setErrorCode(null);
@@ -238,15 +133,6 @@ export default function Login(props: LoginProps) {
         avatarUrl: user.photoURL || undefined
       };
 
-      // 보안 규칙에서 역할을 판별할 수 있도록 users/{uid} 프로필 기록 (best-effort)
-      try {
-        await setDoc(doc(db, 'users', user.uid), {
-          email: loggedInUser.email,
-          name: loggedInUser.name,
-          role: 'admin'
-        }, { merge: true });
-      } catch { /* non-blocking */ }
-
       localStorage.setItem('logged_in_user', JSON.stringify(loggedInUser));
       props.onLoginSuccess(loggedInUser);
     } catch (error: any) {
@@ -265,106 +151,46 @@ export default function Login(props: LoginProps) {
   const handleCredentialLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailId.trim() || !password.trim()) {
-      setErrorCode("사번(또는 이메일)과 비밀번호를 모두 입력해주십시오.");
+      setErrorCode("사번과 비밀번호를 모두 입력해주십시오.");
       return;
     }
 
     setErrorCode(null);
     setIsLoading(true);
 
-    // 사번 또는 이메일을 실제 로그인 이메일로 해석
-    const resolved = await resolveLoginId(emailId);
-    if (!resolved) {
-      setErrorCode("해당 사번 또는 이메일의 계정을 찾을 수 없습니다.");
-      setIsLoading(false);
-      return;
-    }
-    if (resolved.resigned) {
-      setErrorCode("퇴사 처리된 계정으로 로그인이 차단되었습니다. 관리자에게 문의하세요.");
-      setIsLoading(false);
-      return;
-    }
-    const email = resolved.email;
-
     try {
-      // ── 1) Firebase Auth 경로 (단계적 이관) ─────────────────────────────
-      // 기존 사용자는 첫 로그인 시 Auth 계정으로 자동 이관(self-provisioning)된다.
-      // 인프라 미비(제공자 비활성 등)나 불확실한 실패 시 null을 반환해 레거시로 폴백.
-      let authResult: { id: string; profile: { name: string; role: UserAccount['role']; employeeId?: string } } | null = null;
+      const input = emailId.trim();
+      const isEmail = input.includes('@');
+      const emps = await loadEmployees();
 
-      try {
-        try {
-          // (a) 이미 이관된 사용자
-          const cred = await signInWithEmailAndPassword(auth, email, password);
-          const profile = await loadOrCreateProfile(cred.user.uid, email);
-          authResult = { id: cred.user.uid, profile };
-        } catch (signInErr: any) {
-          const code = signInErr?.code || '';
-          if (AUTH_FALLBACK_CODES.includes(code)) {
-            authResult = null; // 인프라 미비 → 레거시 폴백
-          } else {
-            // (b) 아직 미이관 or 비번 상이 → 레거시 자격증명으로 검증 후 프로비저닝
-            const legacy = await findLegacyAccount(email, password);
-            if (!legacy) {
-              setErrorCode("일치하는 로그인 계정 정보가 없거나 비밀번호가 틀립니다.");
-              setIsLoading(false);
-              return;
-            }
-            if (legacy.status === 'inactive') {
-              setErrorCode("해당 계정은 시스템 운영자에 의해 정지(비활성화)된 계정입니다.");
-              setIsLoading(false);
-              return;
-            }
-            try {
-              const cred = await createUserWithEmailAndPassword(auth, email, password);
-              const profile = { name: legacy.name, role: legacy.role, employeeId: legacy.employeeId };
-              try { await setDoc(doc(db, 'users', cred.user.uid), { email, ...profile }, { merge: true }); } catch { /* best-effort */ }
-              authResult = { id: cred.user.uid, profile };
-            } catch (createErr: any) {
-              // email-already-in-use(비번 불일치) 또는 인프라 문제 → 레거시 로그인으로 폴백(락아웃 방지)
-              console.warn("Auth provisioning fell back to legacy login:", createErr?.code || createErr);
-              authResult = null;
-            }
-          }
-        }
-      } catch (authPathErr) {
-        console.warn("Auth path error, falling back to legacy:", authPathErr);
-        authResult = null;
-      }
+      // 사번(또는 이메일)으로 임직원 조회
+      const emp = isEmail
+        ? emps.find(e => (e.email || '').toLowerCase() === input.toLowerCase())
+        : emps.find(e => (e.employeeNumber || '').toUpperCase() === input.toUpperCase());
 
-      if (authResult) {
-        const loggedInUser: User = {
-          id: authResult.id,
-          email,
-          name: authResult.profile.name,
-          role: authResult.profile.role,
-          employeeId: authResult.profile.employeeId
-        };
-        localStorage.setItem('logged_in_user', JSON.stringify(loggedInUser));
-        props.onLoginSuccess(loggedInUser);
-        return;
-      }
-
-      // ── 2) 레거시 경로 (폴백, 기존 동작 유지) ───────────────────────────
-      const matchedAccount = await findLegacyAccount(email, password);
-
-      if (!matchedAccount) {
-        setErrorCode("일치하는 로그인 계정 정보가 없거나 비밀번호가 틀립니다.");
+      if (!emp) {
+        setErrorCode("해당 사번의 임직원을 찾을 수 없습니다. 사번을 확인해 주세요.");
         setIsLoading(false);
         return;
       }
-      if (matchedAccount.status === 'inactive') {
-        setErrorCode("해당 계정은 시스템 운영자에 의해 정지(비활성화)된 계정입니다.");
+      if (emp.status === 'resigned' || emp.status === 'inactive') {
+        setErrorCode("퇴사 처리된 계정으로 로그인이 차단되었습니다. 관리자에게 문의하세요.");
+        setIsLoading(false);
+        return;
+      }
+      // 사번 + (임시)비밀번호 검증
+      if (!emp.initialPassword || emp.initialPassword !== password) {
+        setErrorCode("비밀번호가 올바르지 않습니다. 관리자에게 임시 비밀번호를 확인하세요.");
         setIsLoading(false);
         return;
       }
 
       const loggedInUser: User = {
-        id: matchedAccount.id,
-        email: matchedAccount.email,
-        name: matchedAccount.name,
-        role: matchedAccount.role,
-        employeeId: matchedAccount.employeeId
+        id: emp.id,
+        email: emp.email || '',
+        name: emp.name,
+        role: mapEmployeeRole(emp.role),
+        employeeId: emp.id
       };
       localStorage.setItem('logged_in_user', JSON.stringify(loggedInUser));
       props.onLoginSuccess(loggedInUser);
@@ -445,71 +271,10 @@ export default function Login(props: LoginProps) {
           )}
 
           {activeLoginTab === 'credential' ? (
-            showForgot ? (
-              /* 비밀번호 찾기 (이메일 재설정) */
-              <form onSubmit={handleForgotPassword} className="space-y-4">
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => { setShowForgot(false); setForgotMsg(null); }}
-                    className="flex items-center space-x-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 cursor-pointer mb-1"
-                  >
-                    <ArrowLeft className="h-3.5 w-3.5" />
-                    <span>로그인으로 돌아가기</span>
-                  </button>
-                  <h3 className="text-sm font-bold text-slate-800">비밀번호 찾기</h3>
-                  <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">가입된 이메일로 비밀번호 재설정 링크를 보내드립니다. 사번 또는 이메일을 입력하세요.</p>
-                </div>
-
-                {forgotMsg && (
-                  <div className={`p-3.5 rounded-lg flex items-start space-x-2 text-left border-l-4 ${forgotIsError ? 'bg-red-50 border-red-500' : 'bg-emerald-50 border-emerald-500'}`}>
-                    {forgotIsError ? <AlertCircle className="h-4.5 w-4.5 text-red-500 shrink-0 mt-0.5" /> : <CheckCircle2 className="h-4.5 w-4.5 text-emerald-500 shrink-0 mt-0.5" />}
-                    <span className={`text-[11px] font-semibold leading-relaxed ${forgotIsError ? 'text-red-800' : 'text-emerald-800'}`}>{forgotMsg}</span>
-                  </div>
-                )}
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">사번 또는 이메일</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                      <Mail className="h-4 w-4" />
-                    </div>
-                    <input
-                      type="text"
-                      value={forgotId}
-                      onChange={(e) => setForgotId(e.target.value)}
-                      className="w-full text-xs font-medium pl-10 pr-4 py-2.5 bg-slate-50/50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800/80 transition-all font-mono"
-                      placeholder="CP0001 또는 name@coachingpass.com"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={forgotSending}
-                  className="w-full flex justify-center items-center space-x-2 py-3 px-4 rounded-xl shadow-md text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 focus:outline-none transition-colors cursor-pointer disabled:opacity-75"
-                >
-                  {forgotSending ? (
-                    <>
-                      <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      <span>메일 발송 중...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Mail className="h-4 w-4 text-emerald-400" />
-                      <span>재설정 메일 보내기</span>
-                    </>
-                  )}
-                </button>
-              </form>
-            ) : (
             <form onSubmit={handleCredentialLogin} className="space-y-4">
-              {/* 사번 / 이메일 */}
+              {/* 사번 */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">사번 (또는 이메일)</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">사번</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                     <Hash className="h-4 w-4" />
@@ -519,7 +284,7 @@ export default function Login(props: LoginProps) {
                     value={emailId}
                     onChange={(e) => setEmailId(e.target.value)}
                     className="w-full text-xs font-medium pl-10 pr-4 py-2.5 bg-slate-50/50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800/80 transition-all font-mono"
-                    placeholder="CP0001 (또는 name@coachingpass.com)"
+                    placeholder="CP0001"
                     autoComplete="username"
                     required
                   />
@@ -529,14 +294,8 @@ export default function Login(props: LoginProps) {
               {/* Password */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-bold text-slate-700">로그인 비밀번호</label>
-                  <button
-                    type="button"
-                    onClick={() => { setShowForgot(true); setForgotId(emailId); setForgotMsg(null); setErrorCode(null); }}
-                    className="text-[10px] text-indigo-600 font-bold hover:text-indigo-800 cursor-pointer"
-                  >
-                    비밀번호를 잊으셨나요?
-                  </button>
+                  <label className="block text-xs font-bold text-slate-700">임시 비밀번호</label>
+                  <span className="text-[10px] text-slate-400 font-medium">관리자 발급</span>
                 </div>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
@@ -583,7 +342,6 @@ export default function Login(props: LoginProps) {
                 )}
               </button>
             </form>
-            )
           ) : (
             <div className="space-y-4">
               {inAppBrowser && (

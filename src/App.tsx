@@ -31,7 +31,6 @@ import Settings from './components/Settings';
 import CoachFees from './components/CoachFees';
 import SalesFees from './components/SalesFees';
 import Employees from './components/Employees';
-import AccountsManagement from './components/AccountsManagement';
 import MyPage from './components/MyPage';
 
 // Excel ROUNDDOWN equivalent helper
@@ -414,8 +413,6 @@ export default function App() {
         return <Employees user={user!} />;
       case 'analytics':
         return <Analytics sales={visibleSales} settings={settings} />;
-      case 'accounts':
-        return <AccountsManagement user={user!} />;
       case 'mypage':
         return <MyPage user={user!} />;
       case 'settings':

@@ -6,9 +6,8 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserCircle, Lock, Eye, EyeOff, ShieldCheck, CheckCircle2, AlertCircle, Mail, BadgeCheck } from 'lucide-react';
-import { User, UserAccount } from '../types';
-import { auth, db, writeAuditLog } from '../firebase';
-import { updatePassword } from 'firebase/auth';
+import { User, Employee } from '../types';
+import { db, writeAuditLog } from '../firebase';
 import { collection, getDocs, setDoc, doc } from 'firebase/firestore';
 
 interface MyPageProps {
@@ -36,52 +35,41 @@ export default function MyPage({ user }: MyPageProps) {
 
     setSaving(true);
     try {
-      // 1) user_accounts 비밀번호 갱신 (이메일로 본인 계정 조회) — 레거시/관리자 확인용 소스
-      let updatedAccount = false;
+      // 임직원 레코드의 로그인 비밀번호(initialPassword)를 갱신 — 로그인 검증 소스
+      let empId = user.employeeId;
+      let emps: Employee[] = [];
       try {
-        const snap = await getDocs(collection(db, 'user_accounts'));
-        const accounts = snap.docs.map(d => d.data() as UserAccount);
-        const mine = accounts.find(a => a.email.toLowerCase() === user.email.toLowerCase());
-        if (mine) {
-          await setDoc(doc(db, 'user_accounts', mine.id), { password: newPw }, { merge: true });
-          updatedAccount = true;
-          const cached = localStorage.getItem('cached_user_accounts');
-          if (cached) {
-            try {
-              const arr = JSON.parse(cached) as UserAccount[];
-              localStorage.setItem('cached_user_accounts', JSON.stringify(arr.map(a => a.id === mine.id ? { ...a, password: newPw } : a)));
-            } catch { /* ignore */ }
-          }
+        const snap = await getDocs(collection(db, 'employees'));
+        emps = snap.docs.map(d => d.data() as Employee);
+        if (!empId) {
+          const mine = emps.find(e => (e.email || '').toLowerCase() === user.email.toLowerCase());
+          empId = mine?.id;
         }
       } catch (err) {
-        console.warn('user_accounts 비밀번호 갱신 실패:', err);
+        console.warn('임직원 조회 실패:', err);
       }
 
-      // 2) Firebase Auth 비밀번호 갱신 (Auth로 로그인되어 있는 경우)
-      let authUpdated = false;
-      if (auth.currentUser) {
-        try {
-          await updatePassword(auth.currentUser, newPw);
-          authUpdated = true;
-        } catch (err: any) {
-          if (err?.code === 'auth/requires-recent-login') {
-            setError('보안을 위해 로그아웃 후 다시 로그인한 뒤 변경해 주세요. (임시로 계정 비밀번호는 갱신되었습니다)');
-          } else {
-            console.warn('Firebase Auth 비밀번호 갱신 실패:', err);
-          }
-        }
-      }
-
-      if (!updatedAccount && !authUpdated) {
-        setError('비밀번호를 갱신할 계정을 찾지 못했습니다. 관리자에게 문의해 주세요.');
+      if (!empId) {
+        setError('본인 임직원 정보를 찾지 못했습니다. (구글 관리자 계정은 비밀번호 변경이 필요 없습니다)');
         setSaving(false);
         return;
       }
 
+      await setDoc(doc(db, 'employees', empId), { initialPassword: newPw }, { merge: true });
+
+      // 로컬 캐시 동기화
+      const cached = localStorage.getItem('cached_employees');
+      if (cached) {
+        try {
+          const arr = JSON.parse(cached) as Employee[];
+          localStorage.setItem('cached_employees', JSON.stringify(arr.map(e => e.id === empId ? { ...e, initialPassword: newPw } : e)));
+        } catch { /* ignore */ }
+      }
+
       await writeAuditLog({
         action: 'password_change',
-        entity: 'user_account',
-        entityId: user.id,
+        entity: 'employee',
+        entityId: empId,
         actor: { id: user.id, name: user.name, email: user.email, role: user.role },
         details: { email: user.email }
       });

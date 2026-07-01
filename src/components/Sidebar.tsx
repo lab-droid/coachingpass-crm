@@ -43,7 +43,6 @@ export default function Sidebar(props: SidebarProps) {
     { id: 'sales_fees', label: '영업 수수료', icon: Percent },
     { id: 'employees', label: '임직원', icon: Users },
     { id: 'analytics', label: '심층 요약 분석', icon: BarChart3 },
-    { id: 'accounts', label: '계정 생성 및 관리', icon: Key },
     { id: 'mypage', label: '마이페이지', icon: UserCircle },
     { id: 'settings', label: '시스템 설정', icon: SettingsIcon },
   ];
