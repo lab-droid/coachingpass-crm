@@ -29,6 +29,7 @@ import { SalesFeeItem, Sale, Employee, User } from '../types';
 import { db, handleFirestoreError, OperationType, writeAuditLog } from '../firebase';
 import { collection, onSnapshot, setDoc, doc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { COACH_TARIFF_TABLE } from '../data/coachTariff';
+import SearchableSelect from './SearchableSelect';
 
 // Excel ROUNDDOWN equivalent helper
 const roundDown = (value: number, digits: number): number => {
@@ -1113,38 +1114,38 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
 
                             {/* Column D: 영업담당 */}
                             <td className="border-r border-slate-200 p-1">
-                              <select
+                              <SearchableSelect
                                 value={fee.managerName || '없음'}
-                                onChange={(e) => updateSaleProperty(fee.id, 'managerName', e.target.value)}
-                                className={`w-full border-0 outline-none bg-transparent cursor-pointer p-1 font-bold rounded text-center text-xs ${
+                                onChange={(v) => updateSaleProperty(fee.id, 'managerName', v)}
+                                searchPlaceholder="영업담당 검색"
+                                options={[
+                                  ...salesManagersList.map(rep => ({ value: rep.name, label: rep.name })),
+                                  { value: '배정 대기', label: '배정 대기' },
+                                  { value: '없음', label: '없음' },
+                                ]}
+                                triggerClassName={`w-full cursor-pointer p-1 font-bold rounded text-xs hover:bg-amber-50/40 ${
                                   (!fee.managerName || fee.managerName === '없음') ? 'text-rose-600' : 'text-slate-750'
                                 }`}
-                              >
-                                {salesManagersList.map((rep) => (
-                                  <option key={rep.id} value={rep.name}>{rep.name}</option>
-                                ))}
-                                <option value="배정 대기">배정 대기</option>
-                                <option value="없음">없음</option>
-                              </select>
+                              />
                             </td>
 
                             {/* Column E: 담당코치 (syncs to 코치수수료) */}
                             <td className="border-r border-slate-200 p-1">
-                              <select
+                              <SearchableSelect
                                 value={fee.coachName || '없음'}
-                                onChange={(e) => updateSaleProperty(fee.id, 'coachName', e.target.value)}
-                                className={`w-full border-0 outline-none bg-transparent cursor-pointer p-1 font-bold rounded text-center text-xs ${
+                                onChange={(v) => updateSaleProperty(fee.id, 'coachName', v)}
+                                searchPlaceholder="담당코치 검색"
+                                options={[
+                                  { value: '없음', label: '없음' },
+                                  ...coachNames.map(name => ({ value: name, label: name })),
+                                  ...(fee.coachName && fee.coachName !== '없음' && !coachNames.includes(fee.coachName)
+                                    ? [{ value: fee.coachName, label: fee.coachName }]
+                                    : []),
+                                ]}
+                                triggerClassName={`w-full cursor-pointer p-1 font-bold rounded text-xs hover:bg-amber-50/40 ${
                                   fee.coachName && fee.coachName !== '없음' ? 'text-emerald-700' : 'text-rose-600'
                                 }`}
-                              >
-                                <option value="없음">없음</option>
-                                {coachNames.map((name) => (
-                                  <option key={name} value={name}>{name}</option>
-                                ))}
-                                {fee.coachName && fee.coachName !== '없음' && !coachNames.includes(fee.coachName) && (
-                                  <option value={fee.coachName}>{fee.coachName}</option>
-                                )}
-                              </select>
+                              />
                             </td>
 
                             {/* Column F: DB유입 (Inquiry type) */}

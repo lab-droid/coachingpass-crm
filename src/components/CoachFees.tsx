@@ -28,6 +28,7 @@ import { Coach, CoachFeeItem, Sale, User } from '../types';
 import { db, handleFirestoreError, OperationType, isQuotaExceeded, writeAuditLog } from '../firebase';
 import { collection, onSnapshot, setDoc, doc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { COACH_TARIFF_TABLE, CoachTariff } from '../data/coachTariff';
+import SearchableSelect from './SearchableSelect';
 
 const getUniqueCoachesFromTariff = (): Coach[] => {
   const uniqueNames = Array.from(new Set(COACH_TARIFF_TABLE.map(t => t.coachName)));
@@ -1389,15 +1390,13 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                               </td>
                               {/* 1. 담당코치 */}
                               <td className="p-1 border-r border-slate-200 bg-white">
-                                <select
+                                <SearchableSelect
                                   value={fee.coachName}
-                                  onChange={(e) => handleCellChange(fee, 'coachName', e.target.value)}
-                                  className="w-full bg-transparent p-1.5 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded font-bold text-slate-800 text-xs"
-                                >
-                                  {Array.from(new Set(tariffs.map(t => t.coachName))).sort().map(name => (
-                                    <option key={name} value={name}>{name}</option>
-                                  ))}
-                                </select>
+                                  onChange={(v) => handleCellChange(fee, 'coachName', v)}
+                                  searchPlaceholder="코치 검색"
+                                  options={(Array.from(new Set(tariffs.map(t => t.coachName))) as string[]).sort().map(name => ({ value: name, label: name }))}
+                                  triggerClassName="w-full p-1.5 rounded font-bold text-slate-800 text-xs hover:bg-slate-50"
+                                />
                               </td>
 
                               {/* 1.5 코칭방식 (대면/비대면/통합/대입) */}
@@ -1439,20 +1438,20 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
 
                               {/* 4. 영업담당 */}
                               <td className="p-1 border-r border-slate-200 bg-white">
-                                <select
+                                <SearchableSelect
                                   value={fee.managerName || ''}
-                                  onChange={(e) => handleCellChange(fee, 'managerName', e.target.value)}
-                                  className="w-full bg-transparent p-1.5 font-semibold focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded text-slate-800 text-xs"
-                                >
-                                  <option value="">배정 대기 (None)</option>
-                                  {employees
-                                    .filter(e => e.role === '영업팀')
-                                    .sort((a, b) => a.name.localeCompare(b.name))
-                                    .map(e => (
-                                      <option key={e.id || e.name} value={e.name}>{e.name}</option>
-                                    ))
-                                  }
-                                </select>
+                                  onChange={(v) => handleCellChange(fee, 'managerName', v)}
+                                  searchPlaceholder="영업담당 검색"
+                                  placeholder="배정 대기 (None)"
+                                  options={[
+                                    { value: '', label: '배정 대기 (None)' },
+                                    ...employees
+                                      .filter(e => e.role === '영업팀')
+                                      .sort((a, b) => a.name.localeCompare(b.name))
+                                      .map(e => ({ value: e.name, label: e.name })),
+                                  ]}
+                                  triggerClassName={`w-full p-1.5 font-semibold rounded text-xs hover:bg-slate-50 ${fee.managerName ? 'text-slate-800' : 'text-rose-600'}`}
+                                />
                               </td>
 
                               {/* 5. 코칭시간 (혼합 시 대면/비대면 분리 입력) */}
