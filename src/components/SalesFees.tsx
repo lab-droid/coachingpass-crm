@@ -118,10 +118,12 @@ export default function SalesFees(props: SalesFeesProps) {
 
   const isMonthLocked = (dateStr: string) => lockedMonths.includes((dateStr || '').substring(0, 7));
 
-  // 잠긴(마감된) 월의 데이터 수정을 차단
-  const blockedByLock = (dateStr?: string): boolean => {
+  // 잠긴(마감된) 월의 데이터 수정을 차단.
+  // 단, 정산 보류(hold) 건은 추후 정산을 위해 마감과 무관하게 계속 편집/정산할 수 있다.
+  const blockedByLock = (dateStr?: string, status?: string): boolean => {
+    if (status === 'hold') return false;
     if (dateStr && isMonthLocked(dateStr)) {
-      alert(`${dateStr.substring(0, 7)}월은 정산 마감(잠금)되어 수정할 수 없습니다. 관리자에게 문의하세요.`);
+      alert(`${dateStr.substring(0, 7)}월은 정산 마감(잠금)되어 수정할 수 없습니다. (정산 보류 건은 예외) 관리자에게 문의하세요.`);
       return true;
     }
     return false;
@@ -302,8 +304,9 @@ export default function SalesFees(props: SalesFeesProps) {
 
   // Bulk mark a set of sales-fee rows as 정산완료 — writes to the shared sales records (atomic batch)
   const handleBulkCompleteSales = async (items: SalesFeeItem[], label: string) => {
-    const lockedCount = items.filter(i => i.status !== 'completed' && isMonthLocked(i.date)).length;
-    const targets = items.filter(i => i.status !== 'completed' && !isMonthLocked(i.date));
+    // 마감된 월은 제외하되, 보류(hold) 건은 마감과 무관하게 정산 대상에 포함
+    const lockedCount = items.filter(i => i.status !== 'completed' && isMonthLocked(i.date) && i.status !== 'hold').length;
+    const targets = items.filter(i => i.status !== 'completed' && (!isMonthLocked(i.date) || i.status === 'hold'));
     if (targets.length === 0) {
       showToast(lockedCount > 0 ? '대상이 마감(잠금)된 월이라 처리할 수 없습니다.' : '이미 모두 정산완료 상태이거나 대상이 없습니다.');
       return;
@@ -361,7 +364,7 @@ export default function SalesFees(props: SalesFeesProps) {
     try {
       const existingSale = props.sales.find(s => s.id === saleId);
       if (existingSale) {
-        if (blockedByLock(existingSale.date)) return;
+        if (blockedByLock(existingSale.date, existingSale.status)) return;
         const totalSales = existingSale.amount || 0;
         const vat = Math.round(totalSales * 0.1);
         const supplyPrice = totalSales - vat;
@@ -446,7 +449,7 @@ export default function SalesFees(props: SalesFeesProps) {
 
   // Update Payout Status (supports hold and holdReason)
   const handleUpdateStatus = async (item: SalesFeeItem, nextStatus: 'pending' | 'completed' | 'hold') => {
-    if (blockedByLock(item.date)) return;
+    if (blockedByLock(item.date, item.status)) return;
     const saleId = item.salesId || item.id;
     let holdReason = item.holdReason || '';
     if (nextStatus === 'hold' && !holdReason) {
@@ -498,7 +501,7 @@ export default function SalesFees(props: SalesFeesProps) {
     try {
       const existingSale = props.sales.find(s => s.id === saleId);
       if (!existingSale) return;
-      if (blockedByLock(existingSale.date)) return;
+      if (blockedByLock(existingSale.date, existingSale.status)) return;
 
       let updatePayload: any = { [fieldName]: value };
 
@@ -561,8 +564,8 @@ export default function SalesFees(props: SalesFeesProps) {
   };
 
   // Delete sales fee item
-  const handleDeleteFee = async (id: string, rep: string, client: string, date?: string) => {
-    if (blockedByLock(date)) return;
+  const handleDeleteFee = async (id: string, rep: string, client: string, date?: string, status?: string) => {
+    if (blockedByLock(date, status)) return;
     if (confirm(`선택한 영업 수수료 전산 데이터 (${rep} → ${client})를 완전히 전산 삭제하시겠습니까?`)) {
       try {
         if (props.setSales) {
@@ -1218,7 +1221,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
                             {/* Delete Button */}
                             <td className="p-1 text-center">
                               <button
-                                onClick={() => handleDeleteFee(fee.id, fee.managerName, fee.customerName, fee.date)}
+                                onClick={() => handleDeleteFee(fee.id, fee.managerName, fee.customerName, fee.date, fee.status)}
                                 className="p-1 text-slate-350 hover:text-rose-500 hover:bg-rose-100/30 rounded duration-75 cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5 mx-auto" />

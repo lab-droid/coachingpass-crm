@@ -458,10 +458,12 @@ export default function CoachFees(props: CoachFeesProps) {
 
   const isMonthLocked = (dateStr: string) => lockedMonths.includes((dateStr || '').substring(0, 7));
 
-  // 잠긴(마감된) 월의 데이터 수정을 차단
-  const blockedByLock = (dateStr?: string): boolean => {
+  // 잠긴(마감된) 월의 데이터 수정을 차단.
+  // 단, 정산 보류(hold) 건은 추후 정산을 위해 마감과 무관하게 계속 편집/정산할 수 있다.
+  const blockedByLock = (dateStr?: string, status?: string): boolean => {
+    if (status === 'hold') return false;
     if (dateStr && isMonthLocked(dateStr)) {
-      alert(`${dateStr.substring(0, 7)}월은 정산 마감(잠금)되어 수정할 수 없습니다. 관리자에게 문의하세요.`);
+      alert(`${dateStr.substring(0, 7)}월은 정산 마감(잠금)되어 수정할 수 없습니다. (정산 보류 건은 예외) 관리자에게 문의하세요.`);
       return true;
     }
     return false;
@@ -497,8 +499,9 @@ export default function CoachFees(props: CoachFeesProps) {
 
   // Bulk mark a set of fee rows as 정산완료 (settled) — writes to the shared sales records (atomic batch)
   const handleBulkCompleteFees = async (items: CoachFeeItem[], label: string) => {
-    const lockedCount = items.filter(i => i.status !== 'completed' && isMonthLocked(i.date)).length;
-    const targets = items.filter(i => i.status !== 'completed' && !isMonthLocked(i.date));
+    // 마감된 월은 제외하되, 보류(hold) 건은 마감과 무관하게 정산 대상에 포함
+    const lockedCount = items.filter(i => i.status !== 'completed' && isMonthLocked(i.date) && i.status !== 'hold').length;
+    const targets = items.filter(i => i.status !== 'completed' && (!isMonthLocked(i.date) || i.status === 'hold'));
     if (targets.length === 0) {
       showToast(lockedCount > 0 ? '대상이 마감(잠금)된 월이라 처리할 수 없습니다.' : '이미 모두 정산완료 상태이거나 대상이 없습니다.');
       return;
@@ -663,7 +666,7 @@ export default function CoachFees(props: CoachFeesProps) {
 
   // Individual coach status updater (supports hold and reasons)
   const handleUpdateCoachFeeStatus = async (item: CoachFeeItem, nextStatus: 'pending' | 'completed' | 'hold') => {
-    if (blockedByLock(item.date)) return;
+    if (blockedByLock(item.date, item.status)) return;
     const saleId = item.id;
     let holdReason = item.holdReason || '';
     if (nextStatus === 'hold' && !holdReason) {
@@ -695,7 +698,7 @@ export default function CoachFees(props: CoachFeesProps) {
   };
 
   const handleUpdateCoachFeeField = async (item: CoachFeeItem, fieldName: string, value: any) => {
-    if (blockedByLock(item.date)) return;
+    if (blockedByLock(item.date, item.status)) return;
     const saleId = item.id;
     try {
       const updatedFields = {
@@ -722,8 +725,8 @@ export default function CoachFees(props: CoachFeesProps) {
   };
 
   // Delete Fee Item (Deletes from sales database)
-  const handleDeleteFee = async (id: string, name: string, date?: string) => {
-    if (blockedByLock(date)) return;
+  const handleDeleteFee = async (id: string, name: string, date?: string, status?: string) => {
+    if (blockedByLock(date, status)) return;
     if (confirm(`선택한 코치 수수료 전산 기록 (${name})을 완전히 영구 삭제 처리하시겠습니까? (영업/수수료 정산 대장에서 담당코치를 '없음'으로 변경하는 형태로도 연동됩니다)`)) {
       try {
         if (id.startsWith('cf_sale_') || id.startsWith('manual_cf_')) {
@@ -822,7 +825,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
 
   // Change individual cells of a row (Propagates back to shared sales database)
   const handleCellChange = async (fee: CoachFeeItem, field: keyof CoachFeeItem, value: any) => {
-    if (blockedByLock(fee.date)) return;
+    if (blockedByLock(fee.date, fee.status)) return;
     const saleId = fee.id;
 
     try {
@@ -1589,7 +1592,7 @@ PDF 지급 내역 증빙 조서를 청구 발행합니다.
                               <td className="p-1 text-center bg-white">
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteFee(fee.id, `${fee.coachName} - ${fee.customerName}`, fee.date)}
+                                  onClick={() => handleDeleteFee(fee.id, `${fee.coachName} - ${fee.customerName}`, fee.date, fee.status)}
                                   className="text-slate-300 hover:text-rose-500 duration-70 p-1 rounded hover:bg-rose-50 cursor-pointer"
                                 >
                                   <Trash2 className="w-4 h-4 mx-auto" />
