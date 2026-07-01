@@ -135,6 +135,8 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
       if (emp) {
         setAccountName(emp.name);
         setLoginEmail(emp.email);
+        // 사번을 로그인 비밀번호로 자동 설정
+        if (emp.employeeNumber) setLoginPassword(emp.employeeNumber);
         if (emp.role === '영업팀') {
           setCustomRole('영업팀');
         } else if (emp.role === '관리자' || emp.role === '임원') {
@@ -356,6 +358,40 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
     }
   };
 
+  // 임직원 연동 계정의 비밀번호를 각자의 사번으로 일괄 동기화
+  const handleSyncSabunPasswords = async () => {
+    const empById = new Map<string, Employee>(employees.map(e => [e.id, e] as [string, Employee]));
+    const targets = accounts.filter(a => a.employeeId && empById.get(a.employeeId)?.employeeNumber);
+    if (targets.length === 0) {
+      showToast('사번이 부여된 임직원 연동 계정이 없습니다.');
+      return;
+    }
+    if (!confirm(`${targets.length}개 임직원 계정의 로그인 비밀번호를 각자의 사번으로 일괄 설정하시겠습니까?`)) return;
+
+    if (isQuotaExceeded()) {
+      setAccounts(prev => {
+        const next = prev.map(a => {
+          const emp = a.employeeId ? empById.get(a.employeeId) : undefined;
+          return emp?.employeeNumber ? { ...a, password: emp.employeeNumber } : a;
+        });
+        localStorage.setItem('cached_user_accounts', JSON.stringify(next));
+        return next;
+      });
+      showToast(`[로컬] ${targets.length}개 계정 비밀번호를 사번으로 설정했습니다.`);
+      return;
+    }
+
+    try {
+      await Promise.all(
+        targets.map(a => setDoc(doc(db, 'user_accounts', a.id), { password: empById.get(a.employeeId!)!.employeeNumber }, { merge: true }))
+      );
+      showToast(`${targets.length}개 임직원 계정의 비밀번호를 사번으로 동기화했습니다.`);
+    } catch (e: any) {
+      console.error(e);
+      alert('사번 비밀번호 동기화 실패: ' + (e?.message || e));
+    }
+  };
+
   const resetForm = () => {
     setSelectedStaffId('');
     setAccountName('');
@@ -394,13 +430,23 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
             영업 담당자와 파트너 코치 전용 로그인 ID 및 비밀번호를 발급하고, 권한 등급을 격리 통제합니다.
           </p>
         </div>
-        <button
-          onClick={() => { resetForm(); setIsModalOpen(true); }}
-          className="flex items-center justify-center space-x-2 px-4 py-2.5 sm:px-4.5 sm:py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs sm:text-sm transition-all duration-155 transform hover:-translate-y-0.5 cursor-pointer shadow-md shadow-indigo-600/10"
-        >
-          <UserPlus className="h-4 w-4" />
-          <span>신규 로그인 계정 발급</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSyncSabunPasswords}
+            className="flex items-center justify-center space-x-2 px-4 py-2.5 sm:px-4.5 sm:py-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer"
+            title="임직원 연동 계정의 비밀번호를 각자 사번으로 일괄 설정"
+          >
+            <Key className="h-4 w-4" />
+            <span>사번으로 비밀번호 동기화</span>
+          </button>
+          <button
+            onClick={() => { resetForm(); setIsModalOpen(true); }}
+            className="flex items-center justify-center space-x-2 px-4 py-2.5 sm:px-4.5 sm:py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs sm:text-sm transition-all duration-155 transform hover:-translate-y-0.5 cursor-pointer shadow-md shadow-indigo-600/10"
+          >
+            <UserPlus className="h-4 w-4" />
+            <span>신규 로그인 계정 발급</span>
+          </button>
+        </div>
       </div>
 
       {/* Info card */}
@@ -676,9 +722,12 @@ export default function AccountsManagement({ user }: AccountsManagementProps) {
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   className="w-full text-xs font-mono font-bold border border-slate-200 rounded-xl px-3 py-2 focus:ring-2 focus:ring-indigo-505"
-                  placeholder="예: pass1234!"
+                  placeholder="예: CP0001"
                   required
                 />
+                {selectedStaffType === 'employee' && (
+                  <p className="text-[10px] text-indigo-500 mt-1 font-medium">임직원 사번이 초기 로그인 비밀번호로 자동 설정됩니다.</p>
+                )}
               </div>
 
               {/* Actions */}

@@ -559,22 +559,28 @@ const RAW_DEFAULT_EMPLOYEES: Employee[] = [
   }
 ];
 
-const DEFAULT_EMPLOYEES: Employee[] = RAW_DEFAULT_EMPLOYEES.map(emp => {
+// 사번(CP0001~) 생성 헬퍼 — 대표이사(emp_001)가 목록 맨 앞이므로 CP0001이 됨
+const formatEmployeeNumber = (seq: number) => 'CP' + String(seq).padStart(4, '0');
+
+const DEFAULT_EMPLOYEES: Employee[] = RAW_DEFAULT_EMPLOYEES.map((emp, i) => {
+  const employeeNumber = formatEmployeeNumber(i + 1); // 순서대로 사번 부여 (대표이사 = CP0001)
   if (emp.role === '영업팀') {
     let rate = 10;
     if (emp.id === 'emp_003') rate = 15; // 오근목
     else if (['emp_004', 'emp_008', 'emp_009'].includes(emp.id)) rate = 12; // 서헤림, 김의진, 이공희
     return {
       ...emp,
+      employeeNumber,
       commissionRate: rate
     };
   } else if (emp.role === '코치') {
     return {
       ...emp,
+      employeeNumber,
       coachingFee: 150500 // ₩150,500 coaching fee
     };
   }
-  return emp;
+  return { ...emp, employeeNumber };
 });
 
 interface EmployeesProps {
@@ -582,6 +588,7 @@ interface EmployeesProps {
 }
 
 let employeesSeedAttempted = false;
+let employeeNumberBackfillAttempted = false;
 
 export default function Employees({ user }: EmployeesProps) {
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -612,11 +619,29 @@ export default function Employees({ user }: EmployeesProps) {
     const unsubscribe = onSnapshot(collection(db, 'employees'), (snapshot) => {
       const dbEmployees = snapshot.docs.map(doc => doc.data() as Employee);
       const hasOldMock = dbEmployees.some(emp => emp.id === 'emp_001' && emp.name === '김상현');
-      const hasStaleSeed = dbEmployees.some(emp => 
+      const hasStaleSeed = dbEmployees.some(emp =>
         (emp.role === '영업팀' && emp.commissionRate === undefined) ||
         (emp.role === '코치' && emp.coachingFee === undefined) ||
         (emp.role === '영업팀' && emp.department !== '컨설턴트')
       );
+
+      // 사번(employeeNumber) 미부여 문서에 대해 사번만 안전하게 백필 (기존 편집값 보존)
+      if (!employeeNumberBackfillAttempted && !isQuotaExceeded()) {
+        const missing = dbEmployees.filter(emp => !emp.employeeNumber && DEFAULT_EMPLOYEES.some(d => d.id === emp.id));
+        if (missing.length > 0) {
+          employeeNumberBackfillAttempted = true;
+          missing.forEach(async (emp) => {
+            const def = DEFAULT_EMPLOYEES.find(d => d.id === emp.id);
+            if (def?.employeeNumber) {
+              try {
+                await setDoc(doc(db, 'employees', emp.id), { employeeNumber: def.employeeNumber }, { merge: true });
+              } catch (e) {
+                console.error("Failed to backfill 사번:", emp.id, e);
+              }
+            }
+          });
+        }
+      }
       
       if (dbEmployees.length === 0 || hasOldMock || hasStaleSeed) {
         // Fallback, old mock, or stale schema detected: upgrade via merge set
@@ -691,6 +716,15 @@ export default function Employees({ user }: EmployeesProps) {
   const activeCount = employees.filter(e => e.status === 'active').length;
   const inactiveCount = employees.filter(e => e.status === 'inactive').length;
 
+  // 다음 사번(CP####) 자동 채번 — 기존 최대 번호 + 1
+  const nextEmployeeNumber = () => {
+    const maxSeq = employees.reduce((max, e) => {
+      const m = /^CP(\d+)$/.exec((e.employeeNumber || '').trim());
+      return m ? Math.max(max, parseInt(m[1], 10)) : max;
+    }, 0);
+    return formatEmployeeNumber(maxSeq + 1);
+  };
+
   // Save or Update Employee
   const handleSaveEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -711,6 +745,7 @@ export default function Employees({ user }: EmployeesProps) {
       const savedEmployee: Employee = {
         id: employeeId,
         name: currentEmployee.name,
+        employeeNumber: currentEmployee.employeeNumber || nextEmployeeNumber(),
         email: currentEmployee.email,
         phone: currentEmployee.phone || '',
         role: currentEmployee.role as any,
@@ -782,6 +817,7 @@ export default function Employees({ user }: EmployeesProps) {
   const handleCreateNewClick = () => {
     setCurrentEmployee({
       name: '',
+      employeeNumber: nextEmployeeNumber(),
       email: '',
       phone: '',
       role: '코치',
@@ -928,6 +964,7 @@ export default function Employees({ user }: EmployeesProps) {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 text-slate-400 font-bold text-[11px] uppercase tracking-wider border-b border-slate-100">
+                <th className="px-6 py-3.5">사번</th>
                 <th className="px-6 py-3.5">성명</th>
                 <th className="px-6 py-3.5">소속 부서 / 직무</th>
                 <th className="px-6 py-3.5">연락처 / 이메일</th>
@@ -941,6 +978,9 @@ export default function Employees({ user }: EmployeesProps) {
               {filteredEmployees.length > 0 ? (
                 filteredEmployees.map((emp) => (
                   <tr key={emp.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="px-6 py-4.5 border-b border-slate-100">
+                      <span className="font-mono font-bold text-slate-700 text-xs bg-slate-100 px-2 py-1 rounded-md">{emp.employeeNumber || '-'}</span>
+                    </td>
                     <td className="px-6 py-4.5 font-semibold text-slate-900 border-b border-slate-100">
                       <div className="flex items-center space-x-2.5">
                         <div className="h-8 w-8 rounded-full bg-emerald-500/10 text-emerald-700 flex items-center justify-center font-bold text-xs ring-1 ring-emerald-500/15">
@@ -1032,7 +1072,7 @@ export default function Employees({ user }: EmployeesProps) {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7} className="py-20 text-center text-slate-400 font-sans">
+                  <td colSpan={8} className="py-20 text-center text-slate-400 font-sans">
                     <Users className="h-10 w-10 text-slate-200 mx-auto mb-3" />
                     인사 필터링 조건에 부합하는 임직원이 존재하지 않습니다.
                   </td>
@@ -1089,6 +1129,17 @@ export default function Employees({ user }: EmployeesProps) {
 
               {/* Form Content */}
               <form onSubmit={handleSaveEmployee} className="p-6 space-y-4">
+                {/* 사번 (자동 채번, 로그인 비밀번호로 사용) */}
+                <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl px-3.5 py-2.5 flex items-center justify-between">
+                  <div>
+                    <span className="block text-indigo-700 font-bold text-[10px] uppercase">사번 (자동 부여)</span>
+                    <span className="text-[10px] text-indigo-500/90 font-medium">이 사번이 해당 임직원의 로그인 비밀번호로 설정됩니다.</span>
+                  </div>
+                  <span className="font-mono font-black text-indigo-700 text-sm bg-white border border-indigo-200 px-3 py-1.5 rounded-lg">
+                    {currentEmployee?.employeeNumber || '자동 부여'}
+                  </span>
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-slate-550 font-bold text-[10px] uppercase mb-1">성명 <strong className="text-rose-500">*</strong></label>
