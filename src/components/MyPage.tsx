@@ -12,6 +12,7 @@ import { collection, getDocs, setDoc, doc } from 'firebase/firestore';
 
 interface MyPageProps {
   user: User;
+  setUser?: React.Dispatch<React.SetStateAction<User | null>>;
 }
 
 // 연락처를 010-1234-5678 형식으로 자동 포맷
@@ -23,7 +24,7 @@ const formatPhone = (value: string): string => {
   return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
 };
 
-export default function MyPage({ user }: MyPageProps) {
+export default function MyPage({ user, setUser }: MyPageProps) {
   const [newPw, setNewPw] = useState('');
   const [confirmPw, setConfirmPw] = useState('');
   const [show, setShow] = useState(false);
@@ -93,6 +94,11 @@ export default function MyPage({ user }: MyPageProps) {
           parsed.email = email.trim();
           localStorage.setItem('logged_in_user', JSON.stringify(parsed));
         } catch { /* ignore */ }
+      }
+
+      // 앱 전역 사용자 상태를 즉시 갱신 → 새로고침 없이 사이드바/프로필에 반영
+      if (setUser) {
+        setUser(prev => (prev ? { ...prev, email: email.trim() } : prev));
       }
 
       await writeAuditLog({

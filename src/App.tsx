@@ -421,7 +421,7 @@ export default function App() {
       case 'analytics':
         return <Analytics sales={visibleSales} settings={settings} />;
       case 'mypage':
-        return <MyPage user={user!} />;
+        return <MyPage user={user!} setUser={setUser} />;
       case 'settings':
         return (
           <Settings 
