@@ -803,7 +803,7 @@ PDF 지급 승인 및 원천 신고 명세 조서를 청구 첨부합니다.
               );
             })}
 
-            {salesFees.some(f => f.managerName === '없음') && (
+            {isAdmin && salesFees.some(f => f.managerName === '없음') && (
               <div
                 onClick={() => setSelectedManagerName('없음')}
                 className={`p-5 rounded-2xl border transition-all cursor-pointer relative group ${
