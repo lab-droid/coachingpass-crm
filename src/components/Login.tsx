@@ -5,10 +5,9 @@
 
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Server, ShieldCheck, AlertCircle, Lock, Eye, EyeOff, ExternalLink, Smartphone, Hash, Mail, ArrowLeft } from 'lucide-react';
+import { ShieldCheck, AlertCircle, Lock, Eye, EyeOff, Hash, Mail, ArrowLeft } from 'lucide-react';
 import { User, Employee } from '../types';
-import { auth, db } from '../firebase';
-import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { db } from '../firebase';
 import { collection, getDocs, setDoc, doc } from 'firebase/firestore';
 import { generateTempPassword } from '../utils/password';
 import logoUrl from '../assets/images/coachingpass_logo.png';
@@ -40,66 +39,9 @@ interface LoginProps {
   onLoginSuccess: (user: User) => void;
 }
 
-// 카카오톡/네이버/인스타 등 '인앱 브라우저(웹뷰)' 감지.
-// 구글은 이런 임베디드 브라우저에서의 OAuth 로그인을 차단한다(403 disallowed_useragent).
-// 따라서 외부 브라우저(Chrome/Safari)로 열도록 유도해야 한다.
-const detectInAppBrowser = (): string | null => {
-  if (typeof navigator === 'undefined') return null;
-  const ua = navigator.userAgent || '';
-  if (/KAKAOTALK/i.test(ua)) return 'kakao';
-  if (/NAVER\(inapp|inapp; ?naver/i.test(ua)) return 'naver';
-  if (/Instagram/i.test(ua)) return 'instagram';
-  if (/FBAN|FBAV|FB_IAB/i.test(ua)) return 'facebook';
-  if (/Line\//i.test(ua)) return 'line';
-  if (/DaumApps|DaumDevice/i.test(ua)) return 'daum';
-  if (/\bBAND\b|; ?BAND/i.test(ua)) return 'band';
-  // 안드로이드 일반 WebView (인앱 브라우저 공통)
-  if (/Android.*; wv\)/i.test(ua) || /; wv\)/i.test(ua)) return 'webview';
-  return null;
-};
-
-const isIOSDevice = (): boolean =>
-  typeof navigator !== 'undefined' && /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
-
-// 가능하면 현재 페이지를 외부 기본 브라우저에서 강제로 다시 연다.
-const openInExternalBrowser = () => {
-  const url = window.location.href;
-  const kind = detectInAppBrowser();
-
-  if (kind === 'kakao') {
-    // 카카오톡 인앱 브라우저: 외부 브라우저 열기 스킴
-    window.location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(url);
-    return;
-  }
-  if (kind === 'line') {
-    // 라인: openExternalBrowser 파라미터
-    const sep = url.includes('?') ? '&' : '?';
-    window.location.href = url + sep + 'openExternalBrowser=1';
-    return;
-  }
-  if (!isIOSDevice()) {
-    // 안드로이드 일반: Chrome 인텐트로 외부 실행
-    try {
-      const u = new URL(url);
-      window.location.href =
-        'intent://' + u.host + u.pathname + u.search +
-        '#Intent;scheme=https;package=com.android.chrome;end';
-      return;
-    } catch {
-      /* fall through */
-    }
-  }
-  // iOS 인앱 브라우저는 강제 전환이 불가 → 사용자 안내(우측 상단/하단 메뉴에서 'Safari로 열기')
-};
-
 export default function Login(props: LoginProps) {
-  const [activeLoginTab, setActiveLoginTab] = useState<'google' | 'credential'>('credential');
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-
-  // 인앱 브라우저(웹뷰) 여부 — 구글 OAuth 차단(403 disallowed_useragent) 회피용 안내에 사용
-  const inAppBrowser = detectInAppBrowser();
-  const isIOS = isIOSDevice();
 
   // 사번/비밀번호 states
   const [emailId, setEmailId] = useState('');
@@ -193,49 +135,6 @@ export default function Login(props: LoginProps) {
     }
   };
 
-  const handleGoogleLogin = async () => {
-    setErrorCode(null);
-
-    // 인앱 브라우저에서는 구글이 OAuth를 차단하므로, 팝업을 시도하지 않고
-    // 외부 브라우저로 열도록 유도한다. (안내 UI가 이미 노출되어 있음)
-    if (inAppBrowser) {
-      openInExternalBrowser();
-      if (isIOS) {
-        setErrorCode("카카오톡/네이버 등 인앱 브라우저에서는 구글 로그인이 차단됩니다. 우측 상단(또는 하단) 메뉴에서 'Safari로 열기'를 선택해 다시 접속해 주세요.");
-      }
-      return;
-    }
-
-    setIsLoading(true);
-
-    try {
-      const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      const user = result.user;
-      
-      const loggedInUser: User = {
-        id: user.uid,
-        email: user.email || '',
-        name: user.displayName || user.email?.split('@')[0] || 'Unknown',
-        role: 'admin', // Google SSO defaults to Head admin
-        avatarUrl: user.photoURL || undefined
-      };
-
-      localStorage.setItem('logged_in_user', JSON.stringify(loggedInUser));
-      props.onLoginSuccess(loggedInUser);
-    } catch (error: any) {
-      console.error(error);
-      const msg = String(error?.message || error || '');
-      if (/disallowed_useragent|user-agent|popup|web-storage|operation-not-supported/i.test(msg)) {
-        setErrorCode("이 브라우저에서는 구글 로그인이 제한됩니다. Chrome 또는 Safari 등 기본 브라우저에서 다시 시도해 주세요. (인앱 브라우저 사용 시 차단됨)");
-      } else {
-        setErrorCode(msg || '로그인에 실패했습니다.');
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleCredentialLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailId.trim() || !password.trim()) {
@@ -273,11 +172,13 @@ export default function Login(props: LoginProps) {
         return;
       }
 
+      // CP0001(대표이사)은 항상 최고관리자 권한
+      const role = emp.employeeNumber === 'CP0001' ? 'admin' : mapEmployeeRole(emp.role);
       const loggedInUser: User = {
         id: emp.id,
         email: emp.email || '',
         name: emp.name,
-        role: mapEmployeeRole(emp.role),
+        role,
         employeeId: emp.id
       };
       localStorage.setItem('logged_in_user', JSON.stringify(loggedInUser));
@@ -331,30 +232,8 @@ export default function Login(props: LoginProps) {
         transition={{ duration: 0.5, delay: 0.1 }}
       >
         <div className="bg-slate-900/70 backdrop-blur-xl py-7 px-5 sm:px-8 rounded-3xl border border-amber-400/15 shadow-2xl shadow-black/60">
-          {/* Dual Tab selectors */}
-          <div className="grid grid-cols-2 gap-1.5 mb-6 p-1 bg-black/40 border border-white/5 rounded-2xl">
-            <button
-              type="button"
-              onClick={() => { setActiveLoginTab('credential'); setErrorCode(null); }}
-              className={`py-2.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-                activeLoginTab === 'credential'
-                  ? 'bg-gradient-to-r from-amber-300 to-amber-500 text-black shadow-md shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-amber-200'
-              }`}
-            >
-              임직원
-            </button>
-            <button
-              type="button"
-              onClick={() => { setActiveLoginTab('google'); setErrorCode(null); }}
-              className={`py-2.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
-                activeLoginTab === 'google'
-                  ? 'bg-gradient-to-r from-amber-300 to-amber-500 text-black shadow-md shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-amber-200'
-              }`}
-            >
-              관리자
-            </button>
+          <div className="mb-6 text-center">
+            <span className="inline-flex items-center px-3 py-1 rounded-full text-[11px] font-bold text-amber-200 bg-amber-400/10 border border-amber-400/20 tracking-wide">임직원 로그인</span>
           </div>
 
           {errorCode && (
@@ -364,8 +243,7 @@ export default function Login(props: LoginProps) {
             </div>
           )}
 
-          {activeLoginTab === 'credential' ? (
-            showForgot ? (
+          {showForgot ? (
               /* 비밀번호 찾기 — 사번의 등록 이메일로 임시비밀번호 발급 */
               <form onSubmit={handleForgotPassword} className="space-y-4">
                 <div>
@@ -503,61 +381,6 @@ export default function Login(props: LoginProps) {
                 )}
               </button>
             </form>
-            )
-          ) : (
-            <div className="space-y-4">
-              {inAppBrowser && (
-                <div className="mb-2 bg-amber-400/10 border border-amber-400/30 rounded-xl p-3.5 text-left">
-                  <div className="flex items-start space-x-2">
-                    <Smartphone className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
-                    <div className="space-y-2">
-                      <p className="text-[11px] text-amber-100 font-bold leading-relaxed">
-                        카카오톡·네이버 등 <span className="underline">인앱 브라우저</span>에서는 구글 보안정책상 로그인이 차단됩니다(403).
-                      </p>
-                      {isIOS ? (
-                        <p className="text-[11px] text-amber-200/90 leading-relaxed">
-                          화면 우측 상단(또는 하단)의 <b>···</b> / 공유 메뉴 → <b>“Safari로 열기”</b>를 눌러 기본 브라우저로 접속한 뒤 다시 로그인해 주세요.
-                        </p>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={openInExternalBrowser}
-                          className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-[11px] font-bold transition-colors cursor-pointer"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                          <span>기본 브라우저(Chrome)로 열기</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-              <p className="text-slate-400 text-[11px] leading-relaxed text-center mb-4">
-                구글 인증이 승인된 등록 관리자만 로그인할 수 있습니다. Google 계정으로 계속하세요.
-              </p>
-              <button
-                type="button"
-                id="login_submit_btn"
-                onClick={handleGoogleLogin}
-                disabled={isLoading}
-                className="w-full flex justify-center items-center space-x-2 py-3.5 px-4 rounded-xl shadow-lg text-sm font-bold text-slate-900 bg-white hover:bg-amber-50 border border-white/20 focus:outline-none duration-100 cursor-pointer disabled:opacity-60 active:scale-[0.99]"
-              >
-                {isLoading ? (
-                  <>
-                    <svg className="animate-spin h-4 w-4 text-slate-900" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                    </svg>
-                    <span>구글 인증 중...</span>
-                  </>
-                ) : (
-                  <>
-                    <Server className="h-4 w-4 text-amber-500" />
-                    <span>Google 계정으로 관리자 로그인</span>
-                  </>
-                )}
-              </button>
-            </div>
           )}
         </div>
       </motion.div>
