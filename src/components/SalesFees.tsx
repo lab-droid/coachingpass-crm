@@ -163,17 +163,23 @@ export default function SalesFees(props: SalesFeesProps) {
   const salesManagersList = React.useMemo(() => {
     // 영업팀 + 임원도 영업담당으로 선택 가능하도록 포함
     const activeDbSales = employees.filter(e => e.status === 'active' && (e.role === '영업팀' || e.role === '임원'));
-    if (activeDbSales.length > 0) {
-      return activeDbSales.map(e => ({
-        id: e.id,
-        name: e.name,
-        department: e.department || '영업팀',
-        defaultRate: e.commissionRate || 15,
-        currentTier: (e.commissionRate && e.commissionRate >= 15) ? '골드' : '실버'
-      }));
+    const base = activeDbSales.length > 0
+      ? activeDbSales.map(e => ({
+          id: e.id,
+          name: e.name,
+          department: e.department || '영업팀',
+          defaultRate: e.commissionRate || 15,
+          currentTier: (e.commissionRate && e.commissionRate >= 15) ? '골드' : '실버'
+        }))
+      : STATIC_SALES_MANAGERS;
+
+    // 임원(admin) 외에는 본인만 표시
+    if (!isAdmin && props.user?.role !== 'manager') {
+      const myName = (props.user?.name || '').trim().toLowerCase();
+      return base.filter(m => (m.name || '').trim().toLowerCase() === myName);
     }
-    return STATIC_SALES_MANAGERS;
-  }, [employees]);
+    return base;
+  }, [employees, isAdmin, props.user]);
 
   // Derive salesFees dynamically from props.sales in real-time
   const salesFees: SalesFeeItem[] = React.useMemo(() => {
