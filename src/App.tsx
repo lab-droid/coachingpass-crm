@@ -277,8 +277,13 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    await signOut(auth);
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.warn('signOut 실패(비차단):', e);
+    }
     localStorage.removeItem('logged_in_user');
+    setUser(null); // 상태를 즉시 초기화해야 새로고침 없이 로그인 화면으로 전환됨
     setActiveTab('dashboard');
   };
 
@@ -381,19 +386,21 @@ export default function App() {
   }, [user, salesLoaded]);
 
   const renderContent = () => {
-    // Role matching filter for secure workspace segregation
+    // Role matching filter for secure workspace segregation.
+    // 임원(admin)/manager만 전체 열람. 그 외 역할은 본인이 담당(영업담당/담당코치)인 건만.
     const getFilteredSales = () => {
       if (!user) return [];
       if (user.role === 'admin' || user.role === 'manager') {
         return sales;
       }
+      const myName = (user.name || '').trim().toLowerCase();
       if (user.role === '영업팀') {
-        return sales.filter(s => s.managerName === user.name);
+        return sales.filter(s => (s.managerName || '').trim().toLowerCase() === myName);
       }
       if (user.role === '코치') {
-        return sales.filter(s => s.coachName === user.name);
+        return sales.filter(s => (s.coachName || '').trim().toLowerCase() === myName);
       }
-      return sales;
+      return []; // 알 수 없는 역할은 안전하게 비공개(전체 노출 방지)
     };
 
     const visibleSales = getFilteredSales();

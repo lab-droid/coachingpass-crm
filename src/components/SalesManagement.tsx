@@ -148,13 +148,15 @@ export default function SalesManagement(props: SalesManagementProps) {
   // 정렬 및 필터 가공
   const filteredSales = props.sales
     .filter((sale) => {
-      // Role segregation: Sales reps and coaches only see their assigned records
+      // Role segregation: 임원(admin)/manager 외에는 본인 담당 건만 표시
       if (props.user && props.user.role !== 'admin' && props.user.role !== 'manager') {
-        if (props.user.role === '영업팀' && sale.managerName !== props.user.name) {
-          return false;
-        }
-        if (props.user.role === '코치' && sale.coachName !== props.user.name) {
-          return false;
+        const myName = (props.user.name || '').trim().toLowerCase();
+        if (props.user.role === '영업팀') {
+          if ((sale.managerName || '').trim().toLowerCase() !== myName) return false;
+        } else if (props.user.role === '코치') {
+          if ((sale.coachName || '').trim().toLowerCase() !== myName) return false;
+        } else {
+          return false; // 알 수 없는 역할은 비공개
         }
       }
 
