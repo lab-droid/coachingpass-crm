@@ -248,7 +248,7 @@ export default function Login(props: LoginProps) {
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              임직원 / 파트너 포털
+              임직원
             </button>
             <button
               type="button"
@@ -259,7 +259,7 @@ export default function Login(props: LoginProps) {
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              총괄 운영진 (Google)
+              관리자
             </button>
           </div>
 
