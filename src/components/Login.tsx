@@ -202,50 +202,56 @@ export default function Login(props: LoginProps) {
     }
   };
 
+  const inputBase = "w-full text-sm font-medium bg-black/30 border border-white/10 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-amber-400/70 focus:ring-2 focus:ring-amber-400/20 transition-all";
+
   return (
-    <div id="login_container" className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 font-sans">
-      <motion.div 
-        id="login_header_box" 
-        className="sm:mx-auto sm:w-full sm:max-w-md text-center"
+    <div id="login_container" className="relative min-h-screen min-h-[100dvh] overflow-hidden bg-gradient-to-b from-black via-slate-950 to-black flex flex-col justify-center py-10 px-5 sm:px-6 font-sans">
+      {/* 골드 글로우 장식 */}
+      <div className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 h-72 w-72 rounded-full bg-amber-500/20 blur-[100px]" />
+      <div className="pointer-events-none absolute bottom-0 right-0 h-64 w-64 rounded-full bg-amber-400/10 blur-[90px]" />
+
+      <motion.div
+        id="login_header_box"
+        className="relative mx-auto w-full max-w-md text-center"
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
       >
-        <div id="login_brand_logo" className="flex items-center justify-center">
-          <div id="brand_icon_bg" className="h-14 w-14 rounded-xl bg-white border border-slate-200 flex items-center justify-center overflow-hidden shadow-lg shadow-slate-300/40 shrink-0">
+        <div className="flex items-center justify-center">
+          <div className="h-16 w-16 rounded-2xl bg-white flex items-center justify-center overflow-hidden shadow-xl ring-2 ring-amber-400/40 shrink-0">
             <img
               src={logoUrl}
-              className="h-full w-full object-contain p-1.5"
+              className="h-full w-full object-contain p-2"
               alt="코칭패스 CRM"
               referrerPolicy="no-referrer"
             />
           </div>
         </div>
-        <h2 className="mt-5 text-3xl font-extrabold text-slate-800 tracking-tight">
-          코칭패스 CRM
+        <h2 className="mt-5 text-3xl font-black text-white tracking-tight">
+          코칭패스 <span className="text-transparent bg-clip-text bg-gradient-to-r from-amber-200 to-amber-400">CRM</span>
         </h2>
-        <p className="mt-1.5 text-xs text-slate-400 font-semibold uppercase tracking-wider">
-          Enterprise Security Access
+        <p className="mt-2 text-[11px] text-amber-300/80 font-semibold uppercase tracking-[0.2em]">
+          Enterprise Access
         </p>
       </motion.div>
 
-      <motion.div 
-        id="login_form_box" 
-        className="mt-6 sm:mx-auto sm:w-full sm:max-w-md"
-        initial={{ opacity: 0, scale: 0.95 }}
+      <motion.div
+        id="login_form_box"
+        className="relative mt-7 mx-auto w-full max-w-md"
+        initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.5, delay: 0.1 }}
       >
-        <div className="bg-white py-6 px-4 shadow-xl shadow-slate-200/60 rounded-2xl border border-slate-205 sm:px-10">
+        <div className="bg-slate-900/70 backdrop-blur-xl py-7 px-5 sm:px-8 rounded-3xl border border-amber-400/15 shadow-2xl shadow-black/60">
           {/* Dual Tab selectors */}
-          <div className="grid grid-cols-2 gap-2 mb-6 p-1 bg-slate-100 rounded-xl">
+          <div className="grid grid-cols-2 gap-1.5 mb-6 p-1 bg-black/40 border border-white/5 rounded-2xl">
             <button
               type="button"
               onClick={() => { setActiveLoginTab('credential'); setErrorCode(null); }}
-              className={`py-2 px-3 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                activeLoginTab === 'credential' 
-                  ? 'bg-white text-slate-900 shadow-sm' 
-                  : 'text-slate-500 hover:text-slate-800'
+              className={`py-2.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                activeLoginTab === 'credential'
+                  ? 'bg-gradient-to-r from-amber-300 to-amber-500 text-black shadow-md shadow-amber-500/20'
+                  : 'text-slate-400 hover:text-amber-200'
               }`}
             >
               임직원
@@ -253,10 +259,10 @@ export default function Login(props: LoginProps) {
             <button
               type="button"
               onClick={() => { setActiveLoginTab('google'); setErrorCode(null); }}
-              className={`py-2 px-3 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                activeLoginTab === 'google' 
-                  ? 'bg-white text-slate-900 shadow-sm' 
-                  : 'text-slate-500 hover:text-slate-800'
+              className={`py-2.5 px-3 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                activeLoginTab === 'google'
+                  ? 'bg-gradient-to-r from-amber-300 to-amber-500 text-black shadow-md shadow-amber-500/20'
+                  : 'text-slate-400 hover:text-amber-200'
               }`}
             >
               관리자
@@ -264,9 +270,9 @@ export default function Login(props: LoginProps) {
           </div>
 
           {errorCode && (
-            <div id="login_error_banner" className="mb-5 bg-red-50 border-l-4 border-red-500 p-3.5 rounded-lg flex items-start space-x-2 text-left">
-              <AlertCircle className="h-4.5 w-4.5 text-red-500 shrink-0 mt-0.5" />
-              <span className="text-[11px] text-red-800 font-semibold leading-relaxed">{errorCode}</span>
+            <div id="login_error_banner" className="mb-5 bg-rose-500/10 border border-rose-500/30 p-3.5 rounded-xl flex items-start space-x-2 text-left">
+              <AlertCircle className="h-4.5 w-4.5 text-rose-400 shrink-0 mt-0.5" />
+              <span className="text-[11px] text-rose-200 font-semibold leading-relaxed">{errorCode}</span>
             </div>
           )}
 
@@ -274,16 +280,16 @@ export default function Login(props: LoginProps) {
             <form onSubmit={handleCredentialLogin} className="space-y-4">
               {/* 사번 */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">사번</label>
+                <label className="block text-[11px] font-bold text-amber-200/90 mb-1.5 uppercase tracking-wider">사번</label>
                 <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-amber-400/60">
                     <Hash className="h-4 w-4" />
                   </div>
                   <input
                     type="text"
                     value={emailId}
                     onChange={(e) => setEmailId(e.target.value)}
-                    className="w-full text-xs font-medium pl-10 pr-4 py-2.5 bg-slate-50/50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800/80 transition-all font-mono"
+                    className={`${inputBase} pl-10 pr-4 py-3 font-mono`}
                     placeholder="CP0001"
                     autoComplete="username"
                     required
@@ -294,18 +300,18 @@ export default function Login(props: LoginProps) {
               {/* Password */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-bold text-slate-700">임시 비밀번호</label>
-                  <span className="text-[10px] text-slate-400 font-medium">관리자 발급</span>
+                  <label className="block text-[11px] font-bold text-amber-200/90 uppercase tracking-wider">임시 비밀번호</label>
+                  <span className="text-[10px] text-slate-500 font-medium">관리자 발급</span>
                 </div>
                 <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-amber-400/60">
                     <Lock className="h-4 w-4" />
                   </div>
                   <input
                     type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full text-xs font-bold pl-10 pr-10 py-2.5 bg-slate-50/50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-slate-800/20 focus:border-slate-800/80 transition-all font-mono"
+                    className={`${inputBase} pl-10 pr-10 py-3 font-mono`}
                     placeholder="암호를 입력하십시오"
                     autoComplete="current-password"
                     required
@@ -313,7 +319,7 @@ export default function Login(props: LoginProps) {
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-500 hover:text-amber-300 cursor-pointer"
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -324,20 +330,20 @@ export default function Login(props: LoginProps) {
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-md text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-505 transition-colors duration-100 cursor-pointer disabled:opacity-75 items-center space-x-2 mt-2"
+                className="w-full flex justify-center items-center space-x-2 py-3.5 px-4 rounded-xl shadow-lg shadow-amber-500/20 text-sm font-black text-black bg-gradient-to-r from-amber-300 to-amber-500 hover:from-amber-200 hover:to-amber-400 focus:outline-none transition-all duration-100 cursor-pointer disabled:opacity-60 mt-2 active:scale-[0.99]"
               >
                 {isLoading ? (
                   <>
-                    <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                    <svg className="animate-spin h-4 w-4 text-black" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
-                    <span>임직원 보안 확인 중...</span>
+                    <span>보안 확인 중...</span>
                   </>
                 ) : (
                   <>
-                    <ShieldCheck className="h-4 w-4 text-indigo-300" />
-                    <span>사번으로 통합 로그인</span>
+                    <ShieldCheck className="h-4 w-4" />
+                    <span>사번으로 로그인</span>
                   </>
                 )}
               </button>
@@ -345,22 +351,22 @@ export default function Login(props: LoginProps) {
           ) : (
             <div className="space-y-4">
               {inAppBrowser && (
-                <div className="mb-2 bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-left">
+                <div className="mb-2 bg-amber-400/10 border border-amber-400/30 rounded-xl p-3.5 text-left">
                   <div className="flex items-start space-x-2">
-                    <Smartphone className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                    <Smartphone className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
                     <div className="space-y-2">
-                      <p className="text-[11px] text-amber-900 font-bold leading-relaxed">
+                      <p className="text-[11px] text-amber-100 font-bold leading-relaxed">
                         카카오톡·네이버 등 <span className="underline">인앱 브라우저</span>에서는 구글 보안정책상 로그인이 차단됩니다(403).
                       </p>
                       {isIOS ? (
-                        <p className="text-[11px] text-amber-800 leading-relaxed">
+                        <p className="text-[11px] text-amber-200/90 leading-relaxed">
                           화면 우측 상단(또는 하단)의 <b>···</b> / 공유 메뉴 → <b>“Safari로 열기”</b>를 눌러 기본 브라우저로 접속한 뒤 다시 로그인해 주세요.
                         </p>
                       ) : (
                         <button
                           type="button"
                           onClick={openInExternalBrowser}
-                          className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold transition-colors cursor-pointer"
+                          className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-[11px] font-bold transition-colors cursor-pointer"
                         >
                           <ExternalLink className="h-3.5 w-3.5" />
                           <span>기본 브라우저(Chrome)로 열기</span>
@@ -370,28 +376,28 @@ export default function Login(props: LoginProps) {
                   </div>
                 </div>
               )}
-              <p className="text-slate-500 text-[11px] leading-relaxed text-center mb-4">
-                Google인증이 승인되어 등록된 운영진만 로그인이 허용됩니다. Google Workspace 계정을 터치하십시오.
+              <p className="text-slate-400 text-[11px] leading-relaxed text-center mb-4">
+                구글 인증이 승인된 등록 관리자만 로그인할 수 있습니다. Google 계정으로 계속하세요.
               </p>
               <button
                 type="button"
                 id="login_submit_btn"
                 onClick={handleGoogleLogin}
                 disabled={isLoading}
-                className="w-full flex justify-center py-3.5 px-4 border border-transparent rounded-xl shadow-md text-xs font-bold text-white bg-slate-800 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 duration-100 cursor-pointer disabled:opacity-75 items-center justify-center space-x-2"
+                className="w-full flex justify-center items-center space-x-2 py-3.5 px-4 rounded-xl shadow-lg text-sm font-bold text-slate-900 bg-white hover:bg-amber-50 border border-white/20 focus:outline-none duration-100 cursor-pointer disabled:opacity-60 active:scale-[0.99]"
               >
                 {isLoading ? (
                   <>
-                    <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                    <svg className="animate-spin h-4 w-4 text-slate-900" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
-                    <span>Google 인증 보안 로그인 중...</span>
+                    <span>구글 인증 중...</span>
                   </>
                 ) : (
                   <>
-                    <Server className="h-4 w-4 text-emerald-400" />
-                    <span>Google 계정으로 보안 관리자 로그인</span>
+                    <Server className="h-4 w-4 text-amber-500" />
+                    <span>Google 계정으로 관리자 로그인</span>
                   </>
                 )}
               </button>
@@ -400,10 +406,9 @@ export default function Login(props: LoginProps) {
         </div>
       </motion.div>
 
-      <div id="login_footer" className="mt-8 text-center text-xs text-slate-400 font-medium">
-        © 2026 {activeLoginTab === 'google' ? 'Google Auth Protocol Protect' : 'Internal Pass Portal'}.
-        <br />
-        <span className="font-mono mt-1.5 block">Coaching Pass CRM Control Layer</span>
+      <div id="login_footer" className="relative mt-8 text-center text-[11px] text-slate-500 font-medium">
+        © 2026 코칭패스 <span className="text-amber-400/70">CRM</span>
+        <span className="font-mono mt-1.5 block text-slate-600">Coaching Pass Control Layer</span>
       </div>
     </div>
   );
